@@ -4,12 +4,12 @@ const displayModes = [
   {
     id: 'idea',
     name: 'Idea',
-    description: 'Creative response mode — coming soon',
+    description: 'Creative response mode',
   },
   {
     id: 'academic',
     name: 'Academic',
-    description: 'Structured study mode — coming soon',
+    description: 'Structured study mode',
   },
 ]
 
@@ -64,9 +64,7 @@ export default function QuestionInput({ onSubmit, loading }) {
   const [text, setText] = useState('')
   const [imageFile, setImageFile] = useState(null)
   const [examMode, setExamMode] = useState(false)
-  // UI prototype only.
-  // This selection currently has no effect on requests or generated responses.
-  const [selectedDisplayMode, setSelectedDisplayMode] = useState('idea')
+  const [selectedDisplayMode, setSelectedDisplayMode] = useState('academic')
   const [modeMenuOpen, setModeMenuOpen] = useState(false)
   const [focusedModeIndex, setFocusedModeIndex] = useState(0)
   const [isComposing, setIsComposing] = useState(false)
@@ -117,7 +115,7 @@ export default function QuestionInput({ onSubmit, loading }) {
   const handleSubmit = (e) => {
     e.preventDefault()
     if (!canSubmit) return
-    onSubmit(text.trim(), imageFile, examMode)
+    onSubmit(text.trim(), imageFile, examMode, selectedDisplayMode)
   }
 
   const handleImageChange = (e) => {
@@ -214,7 +212,7 @@ export default function QuestionInput({ onSubmit, loading }) {
           ref={textareaRef}
           id="question-text"
           className="question-textarea composer-textarea"
-          placeholder="Ask a question or upload a problem…"
+          placeholder="Ask a question or upload a problem..."
           value={text}
           onChange={(e) => setText(e.target.value)}
           onCompositionStart={() => setIsComposing(true)}

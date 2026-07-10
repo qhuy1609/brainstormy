@@ -13,6 +13,7 @@ from services.session_service import (
     get_next_hint,
     submit_attempt,
     reveal_answer,
+    normalize_response_mode,
 )
 
 learning_bp = Blueprint("learning", __name__)
@@ -39,6 +40,10 @@ def start_session():
     text = request.form.get("question", "").strip()
     image = request.files.get("image")
     exam_mode = request.form.get("exam_mode", "false").lower() == "true"
+    try:
+        mode = normalize_response_mode(request.form.get("mode"))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
 
     if not text and not image:
         return jsonify({"error": "Please provide a question or upload an image."}), 400
@@ -47,7 +52,7 @@ def start_session():
     raw_input = text if text else ""
 
     try:
-        result = create_session(raw_input, input_type, image, exam_mode)
+        result = create_session(raw_input, input_type, image, exam_mode, mode)
         if "error" in result:
             return jsonify(result), 400
         return jsonify(result), 201

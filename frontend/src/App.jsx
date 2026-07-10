@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import QuestionInput from './components/QuestionInput.jsx'
 import SessionView from './components/SessionView.jsx'
+import { buildStartSessionFormData } from './api/startSessionRequest.js'
 
 const API_BASE = 'http://localhost:5000/api/session'
 
@@ -10,30 +11,16 @@ export default function App() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
-  const handleStart = async (text, imageFile, examMode) => {
+  const handleStart = async (text, imageFile, examMode, mode) => {
     setLoading(true)
     setError('')
 
     try {
-      let response
-      if (imageFile) {
-        const formData = new FormData()
-        formData.append('question', text)
-        formData.append('image', imageFile)
-        formData.append('exam_mode', examMode ? 'true' : 'false')
-        response = await fetch(`${API_BASE}/start`, {
-          method: 'POST',
-          body: formData,
-        })
-      } else {
-        const formData = new FormData()
-        formData.append('question', text)
-        formData.append('exam_mode', examMode ? 'true' : 'false')
-        response = await fetch(`${API_BASE}/start`, {
-          method: 'POST',
-          body: formData,
-        })
-      }
+      const formData = buildStartSessionFormData(text, imageFile, examMode, mode)
+      const response = await fetch(`${API_BASE}/start`, {
+        method: 'POST',
+        body: formData,
+      })
 
       const data = await response.json()
 

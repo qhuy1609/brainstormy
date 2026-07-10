@@ -58,10 +58,13 @@ def _system_prompt() -> str:
 # Validation
 # ---------------------------------------------------------------------------
 
-def validate_input(input_text):
-    """Validate that the input is an academic question."""
+def validate_input(input_text, mode="academic"):
+    """Validate input for the selected response mode."""
     if not input_text or len(input_text.strip()) < 3:
         return {"valid": False, "message": "Input is too short or empty."}
+
+    if mode == "idea":
+        return validate_idea_input(input_text)
 
     result = _call_ai(
         [
@@ -70,6 +73,32 @@ def validate_input(input_text):
                 "role": "user",
                 "content": (
                     "Decide whether this is a legitimate academic/study question. "
+                    "Return JSON only in this shape: "
+                    "{\"valid\": true/false, \"message\": \"short user-facing reason\"}.\n\n"
+                    f"Input: {input_text}"
+                ),
+            },
+        ],
+        json_mode=True,
+    )
+
+    return {
+        "valid": bool(result.get("valid")),
+        "message": str(result.get("message") or "OK"),
+    }
+
+
+def validate_idea_input(input_text):
+    """Validate that the input is a legitimate creative or conceptual request."""
+    result = _call_ai(
+        [
+            {"role": "system", "content": _system_prompt()},
+            {
+                "role": "user",
+                "content": (
+                    "Decide whether this is a legitimate creative, conceptual, brainstorming, "
+                    "writing, presentation, project, naming, design, campaign, or idea-development request. "
+                    "Do not reject it just because it has no single objectively correct answer. "
                     "Return JSON only in this shape: "
                     "{\"valid\": true/false, \"message\": \"short user-facing reason\"}.\n\n"
                     f"Input: {input_text}"
@@ -115,6 +144,30 @@ def clean_question(raw_text):
                     "Do not use Markdown bold, headings, or bullet points. "
                     "Use inline LaTeX math with single dollar signs when needed.\n\n"
                     f"Question: {raw_text}"
+                ),
+            },
+        ],
+        temperature=0,
+    )
+    return _clean_display_text(text)
+
+
+def clean_idea_request(raw_text):
+    """Normalize a creative request without changing its constraints."""
+    if not raw_text or not raw_text.strip():
+        return ""
+
+    text = _call_ai(
+        [
+            {"role": "system", "content": _system_prompt()},
+            {
+                "role": "user",
+                "content": (
+                    "Clean this creative request. Fix obvious OCR/spacing issues, preserve every "
+                    "constraint about format, tone, audience, length, genre, topic, and language, "
+                    "and do not fulfill the request. Return only the cleaned request text. "
+                    "Do not use Markdown bold, headings, or bullet points.\n\n"
+                    f"Request: {raw_text}"
                 ),
             },
         ],
@@ -186,6 +239,51 @@ def generate_hints(question):
     return [_clean_display_text(hint) for hint in hints[:3]]
 
 
+def _validate_three_hints(hints):
+    if not isinstance(hints, list) or len(hints) != 3:
+        raise AIServiceError("AI did not return exactly three hints.")
+
+    cleaned_hints = [_clean_display_text(hint) for hint in hints]
+    if any(not hint for hint in cleaned_hints):
+        raise AIServiceError("AI returned an empty hint.")
+
+    return cleaned_hints
+
+
+def generate_idea_hints(request_text):
+    """Return exactly 3 progressive creative hints for Idea mode."""
+    result = _call_ai(
+        [
+            {"role": "system", "content": _system_prompt()},
+            {
+                "role": "user",
+                "content": (
+                    "You are a creative thinking coach. Help the user develop their own idea "
+                    "through exactly three progressive hints.\n\n"
+                    "Generate exactly three hints:\n"
+                    "1. Direction: suggest a useful central angle, perspective, theme, or creative tension.\n"
+                    "2. Building blocks: offer concrete ingredients, imagery, structure, constraints, "
+                    "techniques, or components that develop that direction.\n"
+                    "3. Actionable scaffold: provide a practical framework, outline, sequence, opening "
+                    "direction, or seed options that help the user begin.\n\n"
+                    "Each hint must build on the previous one. Do not provide three unrelated ideas unless "
+                    "the user explicitly asks for alternatives. Do not produce a generic answer. Do not claim "
+                    "there is one objectively correct creative solution. Respect every constraint in the "
+                    "user's request, including format, tone, audience, length, genre, topic, and language. "
+                    "Avoid writing the complete final deliverable. Return JSON only in this shape: "
+                    "{\"hints\": [\"...\", \"...\", \"...\"]}. Do not use Markdown bold, headings, or bullet "
+                    "points inside the strings.\n\n"
+                    f"Request: {request_text}"
+                ),
+            },
+        ],
+        temperature=0.7,
+        json_mode=True,
+    )
+
+    return _validate_three_hints(result.get("hints"))
+
+
 # ---------------------------------------------------------------------------
 # Generate final answer
 # ---------------------------------------------------------------------------
@@ -205,6 +303,27 @@ def generate_final_answer(question):
             },
         ],
         temperature=0,
+    )
+    return _clean_display_text(text)
+
+
+def generate_idea_final_guidance(request_text):
+    """Generate revealable Idea-mode guidance without completing the whole work."""
+    text = _call_ai(
+        [
+            {"role": "system", "content": _system_prompt()},
+            {
+                "role": "user",
+                "content": (
+                    "Give concise final guidance for this creative request after the user has tried. "
+                    "Offer a strong direction, a practical next step, or a short starter fragment if useful, "
+                    "but do not write the complete final poem, story, speech, essay, campaign, or other "
+                    "finished deliverable. Do not use Markdown bold or headings.\n\n"
+                    f"Request: {request_text}"
+                ),
+            },
+        ],
+        temperature=0.7,
     )
     return _clean_display_text(text)
 
@@ -245,6 +364,38 @@ def check_attempt(question, student_answer, correct_answer):
     }
 
 
+def check_idea_attempt(request_text, user_attempt, final_guidance):
+    """Check whether a creative attempt engages with the Idea-mode task."""
+    if not user_attempt or not user_attempt.strip():
+        return {"correct": False, "feedback": "Please share your attempt before continuing."}
+
+    result = _call_ai(
+        [
+            {"role": "system", "content": _system_prompt()},
+            {
+                "role": "user",
+                "content": (
+                    "Review the user's creative attempt for the request. There is no single correct answer. "
+                    "Mark correct when the attempt meaningfully engages with the request or uses the hints; "
+                    "mark false only when it is empty, unrelated, unsafe, or not a real attempt. Return JSON "
+                    "only in this shape: {\"correct\": true/false, \"feedback\": \"short helpful feedback\"}. "
+                    "Do not use Markdown bold, headings, or bullet points in the feedback.\n\n"
+                    f"Request: {request_text}\n"
+                    f"Guidance to compare against: {final_guidance}\n"
+                    f"User attempt: {user_attempt}"
+                ),
+            },
+        ],
+        temperature=0.2,
+        json_mode=True,
+    )
+
+    return {
+        "correct": bool(result.get("correct")),
+        "feedback": _clean_display_text(result.get("feedback") or "Keep developing the idea and try again."),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Generate explanation (used when answer is correct)
 # ---------------------------------------------------------------------------
@@ -267,5 +418,25 @@ def generate_explanation(question, correct_answer):
             },
         ],
         temperature=0.2,
+    )
+    return _clean_display_text(text)
+
+
+def generate_idea_explanation(request_text, final_guidance):
+    """Generate a short reflection after a successful Idea-mode attempt."""
+    text = _call_ai(
+        [
+            {"role": "system", "content": _system_prompt()},
+            {
+                "role": "user",
+                "content": (
+                    "Write a short encouraging explanation of why the user's creative attempt is a useful "
+                    "step forward. Keep it concise. Do not use Markdown bold, headings, or bullet points.\n\n"
+                    f"Request: {request_text}\n"
+                    f"Final guidance: {final_guidance}"
+                ),
+            },
+        ],
+        temperature=0.4,
     )
     return _clean_display_text(text)

@@ -19,6 +19,7 @@ export default function SessionView({ initialSession, onReset, onError }) {
   const isCompleted = session.status === 'completed'
   const currentPart = session.current_sub_question_index + 1
   const totalParts = session.total_sub_questions
+  const isIdeaMode = session.mode === 'idea'
 
   // Refresh session state from backend
   const refresh = async () => {
@@ -39,6 +40,7 @@ export default function SessionView({ initialSession, onReset, onError }) {
         current_sub_question_index: result.next_sub_question_index,
         current_sub_question: result.next_sub_question,
         current_hint_level: result.next_hint_level,
+        current_hint_title: result.next_hint_title,
         current_hint: result.next_hint,
       }))
       setFeedback(prev => ({ ...prev, _autoAdvanced: true }))
@@ -62,6 +64,7 @@ export default function SessionView({ initialSession, onReset, onError }) {
       setSession(prev => ({
         ...prev,
         current_hint_level: data.hint_level,
+        current_hint_title: data.hint_title,
         current_hint: data.hint,
       }))
     } catch (err) {
@@ -103,7 +106,7 @@ export default function SessionView({ initialSession, onReset, onError }) {
         <div className="card complete-card">
           <div className="complete-icon">&#10003;</div>
           <h2>Session Complete</h2>
-          <p>You worked through {totalParts} {totalParts === 1 ? 'question' : 'questions'}. Great job thinking it through!</p>
+          <p>You worked through {totalParts} {totalParts === 1 ? (isIdeaMode ? 'idea' : 'question') : (isIdeaMode ? 'ideas' : 'questions')}. Great job thinking it through!</p>
           {feedback && feedback.explanation && (
             <div className="explanation-box">
               <strong>Explanation:</strong>
@@ -123,19 +126,20 @@ export default function SessionView({ initialSession, onReset, onError }) {
       <ProgressBar current={currentPart} total={totalParts} />
 
       <div className="card question-display-card">
-        <div className="card-label">Question</div>
+        <div className="card-label">{isIdeaMode ? 'Request' : 'Question'}</div>
         <div className="question-display-text"><MathText>{session.cleaned_question}</MathText></div>
       </div>
 
       <div className="card sub-question-card">
         <div className="card-label">
-          {totalParts > 1 ? `Part ${currentPart} of ${totalParts}` : 'Your Task'}
+          {totalParts > 1 ? `Part ${currentPart} of ${totalParts}` : (isIdeaMode ? 'Your Idea Task' : 'Your Task')}
         </div>
         <div className="sub-question-text"><MathText>{session.current_sub_question}</MathText></div>
       </div>
 
       <HintCard
         level={session.current_hint_level + 1}
+        title={session.current_hint_title}
         text={session.current_hint}
         loading={hintLoading}
         maxReached={maxHintsReached}
@@ -150,7 +154,7 @@ export default function SessionView({ initialSession, onReset, onError }) {
       </button>
 
       {maxHintsReached && (
-        <p className="max-hints-note">All hints used. Try submitting an answer.</p>
+        <p className="max-hints-note">All hints used. Try submitting {isIdeaMode ? 'your attempt' : 'an answer'}.</p>
       )}
 
       <AttemptBox
@@ -167,12 +171,12 @@ export default function SessionView({ initialSession, onReset, onError }) {
           onClick={handleReveal}
           disabled={revealLoading || isCompleted}
         >
-          {revealLoading ? <span className="spinner" /> : 'Reveal Answer'}
+          {revealLoading ? <span className="spinner" /> : (isIdeaMode ? 'Reveal Final Guidance' : 'Reveal Answer')}
         </button>
 
         {revealedAnswer && (
           <div className="card reveal-card">
-            <div className="card-label">Final Answer</div>
+            <div className="card-label">{isIdeaMode ? 'Final Guidance' : 'Final Answer'}</div>
             <div className="reveal-answer-text"><MathText>{revealedAnswer}</MathText></div>
           </div>
         )}
