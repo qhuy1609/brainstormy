@@ -79,6 +79,27 @@ class ResponseModeTests(unittest.TestCase):
         self.assertEqual(result["current_hint_title"], "Direction")
         idea_hints.assert_called_once_with("Write a lonely city poem")
 
+    def test_idea_clarification_result_does_not_generate_hints(self):
+        validation = {
+            "status": "needs_clarification",
+            "valid": False,
+            "message": "Please add a little more detail about what you want to create.",
+            "clarification_question": "What would you like to create about \"city boyyy\"?",
+            "request_type": "unknown",
+        }
+
+        with patch("services.session_service.validate_input", return_value=validation), \
+             patch("services.session_service.clean_idea_request") as clean, \
+             patch("services.session_service.generate_idea_hints") as hints, \
+             patch("services.session_service.generate_idea_final_guidance") as guidance:
+            result = create_session("city boyyy", "text", None, False, "idea")
+
+        self.assertEqual(result["status"], "needs_clarification")
+        self.assertEqual(result["clarification_question"], validation["clarification_question"])
+        clean.assert_not_called()
+        hints.assert_not_called()
+        guidance.assert_not_called()
+
     def test_idea_hint_progression_is_ordered(self):
         with patch("services.session_service.validate_input", return_value={"valid": True, "message": "OK"}), \
              patch("services.session_service.clean_idea_request", return_value="Campaign for teen recycling"), \
@@ -102,7 +123,7 @@ class ResponseModeTests(unittest.TestCase):
         image = UploadedImage()
         with patch("services.session_service.extract_text_from_image", return_value="a sketch of a city skyline") as extract, \
              patch("services.session_service.validate_input", return_value={"valid": True, "message": "OK"}), \
-             patch("services.session_service.clean_idea_request", side_effect=lambda text: text), \
+             patch("services.session_service.clean_idea_request", side_effect=lambda text, **kwargs: text), \
              patch("services.session_service.generate_idea_hints", return_value=["direction", "blocks", "scaffold"]) as hints, \
              patch("services.session_service.generate_idea_final_guidance", return_value="final guidance"):
             create_session("poem idea", "image", image, False, "idea")

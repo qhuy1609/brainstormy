@@ -25,7 +25,7 @@ export default function App() {
       const data = await response.json()
 
       if (!response.ok) {
-        setError(data.error || 'Something went wrong.')
+        setError(data.clarification_question || data.error || 'Something went wrong.')
         return
       }
 

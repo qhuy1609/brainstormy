@@ -125,10 +125,12 @@ export default function SessionView({ initialSession, onReset, onError }) {
     <div className="session-view">
       <ProgressBar current={currentPart} total={totalParts} />
 
-      <div className="card question-display-card">
-        <div className="card-label">{isIdeaMode ? 'Request' : 'Question'}</div>
-        <div className="question-display-text"><MathText>{session.cleaned_question}</MathText></div>
-      </div>
+      {!isIdeaMode && (
+        <div className="card question-display-card">
+          <div className="card-label">Question</div>
+          <div className="question-display-text"><MathText>{session.cleaned_question}</MathText></div>
+        </div>
+      )}
 
       <div className="card sub-question-card">
         <div className="card-label">

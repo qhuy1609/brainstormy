@@ -82,10 +82,27 @@ def create_session(raw_input, input_type, image_file, exam_mode, mode="academic"
     # Step 2: Validate
     validation = validate_input(raw_text, mode)
     if not validation["valid"]:
-        return {"error": validation["message"]}
+        if mode == "idea" and validation.get("status") == "needs_clarification":
+            return {
+                "error": validation["message"],
+                "status": "needs_clarification",
+                "validation": validation,
+                "clarification_question": validation.get("clarification_question"),
+                "request_type": validation.get("request_type", "unknown"),
+            }
+        return {
+            "error": validation["message"],
+            "status": validation.get("status", "invalid"),
+            "validation": validation,
+        }
 
     # Step 3: Clean
-    cleaned = clean_idea_request(raw_text) if mode == "idea" else clean_question(raw_text)
+    force_llm_cleanup = input_type == "image"
+    cleaned = (
+        clean_idea_request(raw_text, force_llm_cleanup=force_llm_cleanup)
+        if mode == "idea"
+        else clean_question(raw_text, force_llm_cleanup=force_llm_cleanup)
+    )
 
     # Step 4: Decompose
     sub_questions_raw = [cleaned] if mode == "idea" else decompose_question(cleaned)
@@ -95,7 +112,7 @@ def create_session(raw_input, input_type, image_file, exam_mode, mode="academic"
     for sq_text in sub_questions_raw:
         if mode == "idea":
             hints = generate_idea_hints(sq_text)
-            final_answer = generate_idea_final_guidance(sq_text)
+            final_answer = generate_idea_final_guidance(sq_text, hints)
         else:
             hints = generate_hints(sq_text)
             final_answer = generate_final_answer(sq_text)
@@ -227,14 +244,14 @@ def submit_attempt(session_id, answer):
 
     # Check answer
     if mode == "idea":
-        result = check_idea_attempt(sq["question"], answer, sq["final_answer"])
+        result = check_idea_attempt(sq["question"], answer, sq["hints"])
     else:
         result = check_attempt(sq["question"], answer, sq["final_answer"])
 
     if result["correct"]:
         sq["completed"] = True
         if mode == "idea":
-            explanation = generate_idea_explanation(sq["question"], sq["final_answer"])
+            explanation = generate_idea_explanation(sq["question"], answer, sq["hints"])
         else:
             explanation = generate_explanation(sq["question"], sq["final_answer"])
 
