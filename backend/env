@@ -1,8 +1,0 @@
-# OpenRouter API key used for both text and image models
-OPENROUTER_API_KEY=
-
-# Used for normal text-only questions and final reasoning
-AI_TEXT_MODEL=deepseek/deepseek-chat-v3.1
-
-# Used only when the user uploads an image or the request contains image input
-AI_IMAGE_MODEL=google/gemini-2.5-flash-lite
