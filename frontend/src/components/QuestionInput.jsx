@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 
 const displayModes = [
   {
@@ -66,10 +67,14 @@ export default function QuestionInput({ onSubmit, loading }) {
   const [examMode, setExamMode] = useState(false)
   const [selectedDisplayMode, setSelectedDisplayMode] = useState('academic')
   const [modeMenuOpen, setModeMenuOpen] = useState(false)
+  const [showExamTooltip, setShowExamTooltip] = useState(false)
+  const [examTooltipPosition, setExamTooltipPosition] = useState({ x: 0, y: 0 })
   const [focusedModeIndex, setFocusedModeIndex] = useState(0)
   const [isComposing, setIsComposing] = useState(false)
   const fileRef = useRef(null)
   const textareaRef = useRef(null)
+  const examButtonRef = useRef(null)
+  const examTooltipRef = useRef(null)
   const modeSelectorRef = useRef(null)
   const modeMenuRef = useRef(null)
   const selectedMode = displayModes.find((mode) => mode.id === selectedDisplayMode) || displayModes[0]
@@ -139,6 +144,63 @@ export default function QuestionInput({ onSubmit, loading }) {
 
   const openFilePicker = () => {
     if (!loading) fileRef.current?.click()
+  }
+
+  const clampTooltipPosition = (x, y, anchorX, anchorY) => {
+    const tooltip = examTooltipRef.current
+    const tooltipWidth = tooltip?.offsetWidth || 260
+    const tooltipHeight = tooltip?.offsetHeight || 76
+    const padding = 8
+    const viewportWidth = window.innerWidth
+    const viewportHeight = window.innerHeight
+    let nextX = x
+    let nextY = y
+
+    if (nextX + tooltipWidth + padding > viewportWidth) {
+      nextX = anchorX - tooltipWidth - 14
+    }
+
+    if (nextY < padding) {
+      nextY = anchorY + 18
+    }
+
+    if (nextY + tooltipHeight + padding > viewportHeight) {
+      nextY = viewportHeight - tooltipHeight - padding
+    }
+
+    nextX = Math.max(padding, Math.min(nextX, viewportWidth - tooltipWidth - padding))
+    nextY = Math.max(padding, nextY)
+
+    setExamTooltipPosition({ x: nextX, y: nextY })
+  }
+
+  const showTooltipFromPointer = (event) => {
+    setShowExamTooltip(true)
+    clampTooltipPosition(event.clientX + 14, event.clientY - 72, event.clientX, event.clientY)
+  }
+
+  const showTooltipFromButton = () => {
+    const button = examButtonRef.current
+    if (!button) return
+
+    const rect = button.getBoundingClientRect()
+    const tooltipWidth = examTooltipRef.current?.offsetWidth || 260
+    const x = rect.left + rect.width / 2 - tooltipWidth / 2
+    const y = rect.top - 84
+
+    setShowExamTooltip(true)
+    clampTooltipPosition(x, y, rect.left + rect.width / 2, rect.bottom)
+  }
+
+  const hideExamTooltip = () => {
+    setShowExamTooltip(false)
+  }
+
+  const handleExamKeyDown = (event) => {
+    if (event.key === 'Escape') {
+      setShowExamTooltip(false)
+      event.currentTarget.blur()
+    }
   }
 
   const handleModeButtonKeyDown = (e) => {
@@ -241,27 +303,30 @@ export default function QuestionInput({ onSubmit, loading }) {
               disabled={loading}
               hidden
             />
+          </div>
 
+          <div className="composer-actions-right">
             <div className="tooltip-wrap">
               <button
+                ref={examButtonRef}
                 type="button"
                 className={`composer-icon-btn exam-mode-btn ${examMode ? 'is-active' : ''}`}
                 onClick={() => setExamMode((enabled) => !enabled)}
+                onPointerEnter={showTooltipFromPointer}
+                onPointerMove={showTooltipFromPointer}
+                onPointerLeave={hideExamTooltip}
+                onFocus={showTooltipFromButton}
+                onBlur={hideExamTooltip}
+                onKeyDown={handleExamKeyDown}
                 aria-pressed={examMode}
                 aria-label="Exam mode. Hides the final answer and guides you with hints instead."
-                aria-describedby="exam-mode-tooltip"
+                aria-describedby={showExamTooltip ? 'exam-mode-tooltip' : undefined}
                 disabled={loading}
               >
                 <Icon name="exam" />
               </button>
-              <div id="exam-mode-tooltip" className="exam-tooltip" role="tooltip">
-                <strong>Exam mode</strong>
-                <span>Hides the final answer and guides you with hints instead.</span>
-              </div>
             </div>
-          </div>
 
-          <div className="composer-actions-right">
             <div className="display-mode-selector" ref={modeSelectorRef}>
               <button
                 type="button"
@@ -320,6 +385,23 @@ export default function QuestionInput({ onSubmit, loading }) {
           </div>
         </div>
       </div>
+
+      {showExamTooltip && typeof document !== 'undefined' && createPortal(
+        <div
+          ref={examTooltipRef}
+          id="exam-mode-tooltip"
+          className="exam-tooltip"
+          role="tooltip"
+          style={{
+            left: `${examTooltipPosition.x}px`,
+            top: `${examTooltipPosition.y}px`,
+          }}
+        >
+          <strong>Exam mode</strong>
+          <span>Hides the final answer and guides you with hints instead.</span>
+        </div>,
+        document.body,
+      )}
     </form>
   )
 }
