@@ -12,6 +12,10 @@ logger = logging.getLogger(__name__)
 ACADEMIC_VALIDATION_PROMPT_VERSION = "academic-validation-v2"
 IDEA_VALIDATION_PROMPT_VERSION = "idea-validation-v2"
 ACADEMIC_HINT_PROMPT_VERSION = "academic-hints-v2"
+ACADEMIC_RESPONSE_TYPE_PROMPT_VERSION = "academic-response-type-v1"
+ACADEMIC_DIAGNOSIS_PROMPT_VERSION = "academic-diagnosis-v1"
+ACADEMIC_TARGETED_HINT_PROMPT_VERSION = "academic-targeted-hint-v1"
+ACADEMIC_WORKED_SOLUTION_PROMPT_VERSION = "academic-worked-solution-v1"
 IDEA_DISCOVERY_PROMPT_VERSION = "idea-discovery-v1"
 IDEA_GENERATION_PROMPT_VERSION = "idea-generation-v1"
 IDEA_DEVELOPMENT_PROMPT_VERSION = "idea-development-v1"
@@ -26,6 +30,7 @@ ACADEMIC_HINT_STAGES = ["concept", "method", "near_solution"]
 IDEA_TASK_TYPES = {"creative_writing", "product_project", "design", "campaign", "naming", "presentation", "general"}
 IDEA_QUESTION_TYPES = {"single_select", "multi_select", "short_text"}
 IDEA_DIFFICULTIES = {"low", "medium", "high"}
+ACADEMIC_DIAGNOSIS_STATUSES = {"correct", "mostly_correct", "partially_correct", "misconception", "calculation_error", "incomplete", "insufficient_work", "off_topic"}
 LANGUAGE_NAMES = {
     "en": "English",
     "zh": "Chinese",
@@ -533,6 +538,109 @@ def generate_hints(question):
     )
 
     return result
+
+
+def _academic_schema_text(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False)
+
+
+def infer_academic_response_type(question: str) -> dict[str, str]:
+    """Infer useful, non-solution-revealing guidance for the response editor."""
+    lowered = _basic_clean_text(question).lower()
+    if any(term in lowered for term in ("derive", "derivation", "prove", "show that")):
+        return {"kind": "derivation", "label": "Your derivation", "placeholder": "Start from the relevant principle and show each step that connects it to the result.", "guidance": "Show the reasoning that supports your result."}
+    if any(term in lowered for term in ("calculate", "find", "solve", "numerical", "equation")):
+        return {"kind": "calculation", "label": "Your calculation", "placeholder": "Write the formula you chose, substitute the values, and show the calculation.", "guidance": "Include your formula and key calculation steps."}
+    if any(term in lowered for term in ("explain", "describe", "compare", "discuss", "why")):
+        return {"kind": "explanation", "label": "Your explanation", "placeholder": "State your answer and explain the key idea or evidence that supports it.", "guidance": "Support your answer with clear reasoning."}
+    if any(term in lowered for term in ("code", "bug", "debug", "function", "program")):
+        return {"kind": "code", "label": "Your reasoning", "placeholder": "Describe the bug or approach, then show the relevant code change.", "guidance": "Explain why your change addresses the problem."}
+    # Never make session creation depend on an LLM response; adaptive model calls happen after the student acts.
+    return {"kind": "short_response", "label": "Your response", "placeholder": "Show the key steps in your thinking before giving your answer.", "guidance": "Explain enough reasoning to support your answer."}
+
+    # Retained below as a future model-assisted fallback, intentionally unreachable for reliability.
+    def validate(value):
+        if not isinstance(value, dict):
+            raise AIServiceError("Academic response type must be an object.")
+        kind = str(value.get("kind") or "short_response").strip().lower()
+        if kind not in {"derivation", "calculation", "explanation", "proof", "short_response", "code", "data_interpretation"}:
+            kind = "short_response"
+        return {"kind": kind, "label": _clean_short_text(value.get("label") or "Your response", maximum=80), "placeholder": _clean_short_text(value.get("placeholder") or "Show the key steps in your thinking.", maximum=260), "guidance": _clean_short_text(value.get("guidance") or "Explain enough reasoning to support your answer.", maximum=180)}
+    return _call_json_with_repair([
+        {"role": "system", "content": _academic_system_prompt()},
+        {"role": "user", "content": f"Prompt version: {ACADEMIC_RESPONSE_TYPE_PROMPT_VERSION}\n{_user_content_boundary_instruction()}\n\nClassify the expected student response without solving. Return JSON only with kind, label, placeholder, guidance. The placeholder must invite work but reveal no solution.\n\n{_wrap_user_content('academic_question', question)}"},
+    ], validator=validate, temperature=0, prompt_version=ACADEMIC_RESPONSE_TYPE_PROMPT_VERSION)
+
+
+def generate_initial_academic_hint(question: str, response_type: dict[str, str]) -> dict[str, str]:
+    def validate(value):
+        if not isinstance(value, dict): raise AIServiceError("Initial hint must be an object.")
+        return {"type": "initial", "content": _clean_short_text(value.get("hint"), maximum=500), "focus": _clean_short_text(value.get("focus") or "key concept", maximum=120), "specificity": "conceptual"}
+    return _call_json_with_repair([
+        {"role": "system", "content": _academic_system_prompt()},
+        {"role": "user", "content": f"Prompt version: {ACADEMIC_HINT_PROMPT_VERSION}\n{_user_content_boundary_instruction()}\n\nGive one short conceptual hint before an attempt. Do not reveal the decisive calculation, derivation, or final answer. Prefer a focused question. Return JSON only as {{\"hint\":\"...\",\"focus\":\"...\"}}.\n\n{_wrap_user_content('academic_question', question)}\n\n{_wrap_user_content('response_type_json', _academic_schema_text(response_type))}"},
+    ], validator=validate, temperature=0.2, prompt_version=ACADEMIC_HINT_PROMPT_VERSION)
+
+
+def diagnose_academic_attempt(question: str, attempt: str, prior_attempts: list[str], hints: list[dict[str, str]]) -> dict[str, Any]:
+    prohibited = re.compile(r"\b(the student|the learner|ask the student|tell the student|guide the student|encourage the student|their response|the candidate)\b", re.IGNORECASE)
+    def learner_text(value: Any, *, required: bool = True) -> str | None:
+        text = _clean_short_text(value, required=required, maximum=360) if required else _clean_short_text(value, required=False, maximum=360)
+        if text and prohibited.search(text):
+            raise AIServiceError("Academic feedback must speak directly to the learner.")
+        return text or None
+    def validate(value):
+        if not isinstance(value, dict): raise AIServiceError("Academic diagnosis must be an object.")
+        status = str(value.get("status") or "insufficient_work").lower()
+        if status not in ACADEMIC_DIAGNOSIS_STATUSES: raise AIServiceError("Academic diagnosis returned an unsupported status.")
+        strength = learner_text(value.get("strength"), required=status != "off_topic")
+        focus = learner_text(value.get("focus") or value.get("main_issue"), required=status != "correct")
+        next_action = learner_text(value.get("next_action"), required=True)
+        visible = " ".join(part for part in (strength, focus, next_action) if part)
+        if len(visible.split()) > 120:
+            raise AIServiceError("Academic feedback is too long.")
+        if strength and focus and strength.lower() == focus.lower():
+            raise AIServiceError("Academic feedback repeats the same point.")
+        return {"status": status, "is_complete": bool(value.get("is_complete", status in {"correct", "mostly_correct"})), "strength": strength, "focus": focus, "main_issue": focus, "misconception": learner_text(value.get("misconception"), required=False), "next_action": next_action, "allow_revision": bool(value.get("allow_revision", status != "correct")), "targeted_hint_available": bool(value.get("targeted_hint_available", status != "correct")), "solution_recommended": bool(value.get("solution_recommended", False))}
+    messages = [
+        {"role": "system", "content": _academic_system_prompt()},
+        {"role": "user", "content": f"Prompt version: {ACADEMIC_DIAGNOSIS_PROMPT_VERSION}\n{_user_content_boundary_instruction()}\n\nAnalyse internally as a tutor, but write every returned feedback field directly to the learner. Never call the user 'the student' or 'the learner' and never give teacher instructions. Return only concise JSON with status, is_complete, strength, focus, next_action, allow_revision, targeted_hint_available, solution_recommended. Use one specific strength (or null), one highest-priority focus (or null when correct), and exactly one practical next action. Total visible feedback must be 40-90 words when possible and never exceed 120 words. Do not list every missing step or reveal a full solution.\n\n{_wrap_user_content('academic_question', question)}\n\n{_wrap_user_content('student_attempt', attempt)}\n\n{_wrap_user_content('previous_hints_json', _academic_schema_text(hints))}"},
+    ]
+    try:
+        return _call_json_with_repair(messages, validator=validate, temperature=0.15, prompt_version=ACADEMIC_DIAGNOSIS_PROMPT_VERSION)
+    except AIServiceError:
+        return {"status": "incomplete", "is_complete": False, "strength": "You have made a useful start.", "focus": "One important part of the reasoning is still missing.", "main_issue": "One important part of the reasoning is still missing.", "misconception": None, "next_action": "Review the connection between your current steps, then revise your response.", "allow_revision": True, "targeted_hint_available": True, "solution_recommended": False}
+
+
+def generate_targeted_academic_hint(question: str, attempt: str, diagnosis: dict[str, Any], prior_hints: list[dict[str, str]]) -> dict[str, str]:
+    def validate(value):
+        if not isinstance(value, dict): raise AIServiceError("Targeted hint must be an object.")
+        content = _clean_short_text(value.get("hint"), maximum=500)
+        if any(content == hint.get("content") for hint in prior_hints): raise AIServiceError("Targeted hint repeated a previous hint.")
+        return {"type": "targeted", "content": content, "focus": _clean_short_text(value.get("focus") or "next reasoning step", maximum=120), "specificity": str(value.get("specificity") or "targeted")}
+    return _call_json_with_repair([
+        {"role": "system", "content": _academic_system_prompt()},
+        {"role": "user", "content": f"Prompt version: {ACADEMIC_TARGETED_HINT_PROMPT_VERSION}\n{_user_content_boundary_instruction()}\n\nGive one concise hint that addresses the diagnosis and does not repeat previous hints or reveal the final answer. Return JSON only with hint, focus, specificity.\n\n{_wrap_user_content('academic_question', question)}\n\n{_wrap_user_content('student_attempt', attempt)}\n\n{_wrap_user_content('diagnosis_json', _academic_schema_text(diagnosis))}\n\n{_wrap_user_content('previous_hints_json', _academic_schema_text(prior_hints))}"},
+    ], validator=validate, temperature=0.2, prompt_version=ACADEMIC_TARGETED_HINT_PROMPT_VERSION)
+
+
+def generate_worked_solution(question: str, response_type: dict[str, str]) -> dict[str, Any]:
+    def validate(value):
+        if not isinstance(value, dict): raise AIServiceError("Worked solution must be an object.")
+        steps = value.get("steps")
+        if not isinstance(steps, list) or not 2 <= len(steps) <= 5: raise AIServiceError("Worked solution needs two to five steps.")
+        cleaned_steps = []
+        for step in steps:
+            if not isinstance(step, dict): raise AIServiceError("Worked solution steps must be objects.")
+            cleaned_steps.append({"title": _clean_short_text(step.get("title"), maximum=80), "explanation": _clean_short_text(step.get("explanation"), maximum=420), "expression": _clean_short_text(step.get("expression"), required=False, maximum=400) or None})
+        return {"summary": _clean_short_text(value.get("summary"), maximum=300), "steps": cleaned_steps, "final_answer": _clean_short_text(value.get("final_answer"), maximum=500), "assumptions": [_clean_short_text(item, maximum=180) for item in (value.get("assumptions") or [])[:3]], "comparison_to_attempt": _clean_short_text(value.get("comparison_to_attempt"), required=False, maximum=360) or None, "reflection_question": _clean_short_text(value.get("reflection_question"), required=False, maximum=240) or None}
+    try:
+        return _call_json_with_repair([
+        {"role": "system", "content": _academic_system_prompt()},
+        {"role": "user", "content": f"Prompt version: {ACADEMIC_WORKED_SOLUTION_PROMPT_VERSION}\n{_user_content_boundary_instruction()}\n\nReturn a concise structured worked solution, not a paragraph. Return JSON only with summary, steps (2-5 objects with title, explanation, expression or null), final_answer, assumptions, comparison_to_attempt, reflection_question. Use renderer-compatible LaTex for maths, e.g. $W_{{\\text{{gravity}}}} = -mgh$, never raw identifiers such as W_gravity or E_p when mathematical notation is intended. Keep only essential reasoning; do not add unnecessary assumptions or repeat the final result. Adapt steps to the task type; preserve code in Markdown code formatting.\n\n{_wrap_user_content('academic_question', question)}\n\n{_wrap_user_content('response_type_json', _academic_schema_text(response_type))}"},
+    ], validator=validate, temperature=0, prompt_version=ACADEMIC_WORKED_SOLUTION_PROMPT_VERSION)
+    except AIServiceError:
+        return {"summary": "Review the essential reasoning below.", "steps": [{"title": "Use the relevant method", "explanation": "Apply the relationship or principle that directly addresses the question.", "expression": None}, {"title": "State the conclusion", "explanation": "Check that your conclusion answers the original task.", "expression": None}], "final_answer": "See the worked reasoning above.", "assumptions": [], "comparison_to_attempt": None, "reflection_question": None}
 
 
 # ---------------------------------------------------------------------------

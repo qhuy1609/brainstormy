@@ -1,6 +1,18 @@
 import MathText from './MathText.jsx'
 
 export default function FeedbackBox({ feedback }) {
+  if (feedback.diagnosis) {
+    const diagnosis = feedback.diagnosis
+    const isCorrect = diagnosis.status === 'correct'
+    return (
+      <section className={`card feedback-card feedback-neutral ${isCorrect ? 'feedback-correct' : ''}`} aria-label="Feedback">
+        <span className="card-label">{isCorrect ? 'Correct' : 'Feedback'}</span>
+        {diagnosis.strength && <div className="feedback-section"><strong>{isCorrect ? 'Why it works' : 'Good start'}</strong><MathText>{diagnosis.strength}</MathText></div>}
+        {diagnosis.focus && <div className="feedback-section"><strong>Check this</strong><MathText>{diagnosis.focus}</MathText></div>}
+        {diagnosis.next_action && <div className="feedback-section"><strong>{isCorrect ? 'What next' : 'Try this'}</strong><MathText>{diagnosis.next_action}</MathText></div>}
+      </section>
+    )
+  }
   const isCorrect = feedback.correct
 
   return (

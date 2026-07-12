@@ -63,14 +63,12 @@ export default function SessionView({ initialSession, onReset, onError }) {
     setHintLoading(true)
     try {
       const data = await requestHint(session.session_id)
-      if (data.max_hints_reached) {
-        setMaxHintsReached(true)
-      }
+      if (data.max_hints_reached) setMaxHintsReached(true)
       setSession(prev => ({
         ...prev,
-        current_hint_level: data.hint_level,
-        current_hint_title: data.hint_title,
-        current_hint: data.hint,
+        stage: data.stage || prev.stage,
+        current_hint_title: data.hint?.type === 'targeted' ? 'Targeted hint' : 'A hint to get started',
+        current_hint: data.hint?.content || data.hint,
       }))
     } catch (err) {
       onError(err.message)
@@ -97,7 +95,7 @@ export default function SessionView({ initialSession, onReset, onError }) {
     setRevealError('')
     try {
       const data = await revealAnswer(session.session_id)
-      setRevealedAnswer(data.answer)
+      setRevealedAnswer(data.worked_solution || { final_answer: data.answer, steps: [] })
     } catch (err) {
       setRevealError(err.message)
     } finally {
@@ -128,47 +126,32 @@ export default function SessionView({ initialSession, onReset, onError }) {
 
   return (
     <div className="session-view">
-      <ProgressBar current={currentPart} total={totalParts} />
-
-      {!isIdeaMode && (
-        <div className="card question-display-card">
-          <div className="card-label">Question</div>
-          <div className="question-display-text"><MathText>{session.cleaned_question}</MathText></div>
-        </div>
-      )}
-
-      <div className="card sub-question-card">
-        <div className="card-label">
-          {totalParts > 1 ? `Part ${currentPart} of ${totalParts}` : (isIdeaMode ? 'Your Idea Task' : 'Your Task')}
-        </div>
+      {totalParts > 1 && <ProgressBar current={currentPart} total={totalParts} />}
+      <div className="card question-display-card">
+        <div className="card-label">{totalParts > 1 ? `Part ${currentPart} of ${totalParts}` : 'Question'}</div>
         <div className="sub-question-text"><MathText>{session.current_sub_question}</MathText></div>
       </div>
 
-      <HintCard
+      {session.current_hint && <HintCard
         level={session.current_hint_level + 1}
         title={session.current_hint_title}
         text={session.current_hint}
         loading={hintLoading}
         maxReached={maxHintsReached}
-      />
-
-      <button
-        className="btn btn-secondary btn-hint"
-        onClick={handleHint}
-        disabled={hintLoading || maxHintsReached || isCompleted}
-      >
-        {hintLoading ? <span className="spinner" /> : 'Get Next Hint'}
-      </button>
-
-      {maxHintsReached && (
-        <p className="max-hints-note">All hints used. Try submitting {isIdeaMode ? 'your attempt' : 'an answer'}.</p>
-      )}
+      />}
 
       <AttemptBox
         onSubmit={handleAttempt}
         loading={attemptLoading}
         disabled={isCompleted}
+        label={session.response_type?.label || 'Your reasoning'}
+        placeholder={session.response_type?.placeholder || 'Show the key steps in your thinking.'}
+        submitLabel={feedback ? 'Check revised answer' : 'Check my answer'}
       />
+
+      <button className="btn btn-secondary btn-hint" onClick={handleHint} disabled={hintLoading || isCompleted}>
+        {hintLoading ? <span className="spinner" /> : (feedback ? 'Give me a targeted hint' : "I'm stuck — give me a hint")}
+      </button>
 
       {feedback && <FeedbackBox feedback={feedback} />}
 
@@ -176,15 +159,22 @@ export default function SessionView({ initialSession, onReset, onError }) {
         <button
           className="btn btn-ghost btn-reveal"
           onClick={handleReveal}
-          disabled={revealLoading || isCompleted}
+          disabled={revealLoading || isCompleted || !session.attempt_count && !feedback}
         >
-          {revealLoading ? <span className="spinner" /> : (isIdeaMode ? 'Reveal Final Guidance' : 'Reveal Answer')}
+          {revealLoading ? <span className="spinner" /> : 'Show worked solution'}
         </button>
 
         {revealedAnswer && (
           <div className="card reveal-card">
-            <div className="card-label">{isIdeaMode ? 'Final Guidance' : 'Final Answer'}</div>
-            <div className="reveal-answer-text"><MathText>{revealedAnswer}</MathText></div>
+            <div className="card-label">Worked solution</div>
+            {revealedAnswer.summary && <div className="solution-overview"><MathText>{revealedAnswer.summary}</MathText></div>}
+            <ol className="worked-solution-steps">
+              {revealedAnswer.steps?.map((step) => <li key={step.title}><h3>{step.title}</h3><MathText>{step.explanation}</MathText>{step.expression && <div className="solution-expression"><MathText>{step.expression}</MathText></div>}</li>)}
+            </ol>
+            <div className="solution-final-answer"><span>Final answer</span><MathText>{revealedAnswer.final_answer}</MathText></div>
+            {revealedAnswer.assumptions?.length > 0 && <div className="solution-assumptions"><strong>Assumptions</strong><ul>{revealedAnswer.assumptions.map((item) => <li key={item}>{item}</li>)}</ul></div>}
+            {revealedAnswer.comparison_to_attempt && <div className="solution-comparison"><strong>Compared with your attempt</strong><MathText>{revealedAnswer.comparison_to_attempt}</MathText></div>}
+            {revealedAnswer.reflection_question && <div className="solution-reflection"><strong>Reflect</strong><MathText>{revealedAnswer.reflection_question}</MathText></div>}
           </div>
         )}
 

@@ -63,12 +63,12 @@ class ResponseModeTests(unittest.TestCase):
         with patch("services.session_service.validate_input", return_value={"valid": True, "message": "OK"}), \
              patch("services.session_service.clean_question", return_value="Factorise x^2 + 5x + 6"), \
              patch("services.session_service.decompose_question", return_value=["Factorise x^2 + 5x + 6"]), \
-             patch("services.session_service.generate_hints", return_value=["h1", "h2", "h3"]) as hints, \
+             patch("services.session_service.infer_academic_response_type", return_value={"kind": "calculation", "label": "Your calculation", "placeholder": "Show your steps", "guidance": "Show the formula"}) as response_type, \
              patch("services.session_service.generate_final_answer", return_value="(x+2)(x+3)"):
             result = create_session("Factorise x^2 + 5x + 6", "text", None, False, "academic")
         self.assertEqual(result["mode"], "academic")
-        self.assertEqual(result["current_hint_title"], "Hint 1")
-        hints.assert_called_once()
+        self.assertEqual(result["response_type"]["kind"], "calculation")
+        response_type.assert_called_once()
 
     def test_broad_idea_request_starts_discovery_without_hints(self):
         with patch("services.session_service.validate_input", return_value={"valid": True, "message": "OK"}), \

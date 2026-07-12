@@ -14,6 +14,11 @@ from services.ai_service import (
     generate_final_answer,
     check_attempt,
     generate_explanation,
+    infer_academic_response_type,
+    generate_initial_academic_hint,
+    diagnose_academic_attempt,
+    generate_targeted_academic_hint,
+    generate_worked_solution,
     plan_idea_discovery,
     generate_personalized_ideas,
     generate_idea_development_brief,
@@ -213,14 +218,10 @@ def create_session(raw_input, input_type, image_file, exam_mode, mode="academic"
     sub_questions_raw = decompose_question(cleaned)
     sub_questions = []
     for sq_text in sub_questions_raw:
-        hints = generate_hints(sq_text)
-        final_answer = generate_final_answer(sq_text)
-        logger.info("Final text generation succeeded for a sub-question.")
+        response_type = infer_academic_response_type(sq_text)
         sub_questions.append({
             "question": sq_text,
-            "hints": hints,
-            "final_answer": final_answer,
-            "current_hint_level": 0,
+            "academic_flow": {"stage": "initial_attempt", "response_type": response_type, "attempts": [], "hints": [], "worked_solution": None},
             "attempts": [],
             "completed": False,
         })
@@ -249,9 +250,10 @@ def create_session(raw_input, input_type, image_file, exam_mode, mode="academic"
         "total_sub_questions": len(sub_questions),
         "current_sub_question_index": 0,
         "current_sub_question": first_sq["question"],
-        "current_hint_level": 0,
-        "current_hint_title": "Hint 1",
-        "current_hint": first_sq["hints"][0] if first_sq["hints"] else "No hints available.",
+        "response_type": first_sq["academic_flow"]["response_type"],
+        "stage": "initial_attempt",
+        "attempt_count": 0,
+        "hint_available": True,
         "status": "active",
     }
 
@@ -265,6 +267,9 @@ def get_session_state(session_id):
         return _idea_flow_response(session)
     idx = session["current_sub_question_index"]
     sq = session["sub_questions"][idx]
+    flow = sq.get("academic_flow")
+    if flow:
+        return {"session_id": session_id, "mode": "academic", "cleaned_question": session["cleaned_question"], "is_multi_part": len(session["sub_questions"]) > 1, "total_sub_questions": len(session["sub_questions"]), "current_sub_question_index": idx, "current_sub_question": sq["question"], "status": session["status"], "stage": flow["stage"], "response_type": flow["response_type"], "attempt_count": len(flow["attempts"]), "hint_available": True, "current_hint": flow["hints"][-1] if flow["hints"] else None, "worked_solution": flow["worked_solution"]}
     return {
         "session_id": session_id,
         "mode": "academic",
@@ -396,6 +401,16 @@ def get_next_hint(session_id):
     if session["status"] == "completed":
         return {"error": "This session is already completed."}
     sq = session["sub_questions"][session["current_sub_question_index"]]
+    if "academic_flow" in sq:
+        flow = sq["academic_flow"]
+        if not flow["attempts"]:
+            hint = generate_initial_academic_hint(sq["question"], flow["response_type"])
+        else:
+            latest = flow["attempts"][-1]
+            hint = generate_targeted_academic_hint(sq["question"], latest["text"], latest["diagnosis"], flow["hints"])
+        flow["hints"].append(hint)
+        flow["stage"] = "feedback_received" if flow["attempts"] else "initial_attempt"
+        return {"hint": hint, "current_hint": hint, "stage": flow["stage"], "hint_count": len(flow["hints"])}
     if sq["completed"]:
         return {"error": "This sub-question is already completed."}
     if sq["current_hint_level"] >= 2:
@@ -416,6 +431,20 @@ def submit_attempt(session_id, answer):
         return {"error": "This session is already completed."}
     idx = session["current_sub_question_index"]
     sq = session["sub_questions"][idx]
+    if "academic_flow" in sq:
+        flow = sq["academic_flow"]
+        diagnosis = diagnose_academic_attempt(sq["question"], answer, [item["text"] for item in flow["attempts"]], flow["hints"])
+        flow["attempts"].append({"text": answer, "diagnosis": diagnosis})
+        flow["stage"] = "completed" if diagnosis["status"] == "correct" else "revising"
+        sq["attempts"].append(answer)
+        if diagnosis["status"] == "correct":
+            sq["completed"] = True
+            if idx + 1 < len(session["sub_questions"]):
+                session["current_sub_question_index"] = idx + 1
+            else:
+                session["status"] = "completed"
+        feedback_text = " ".join(part for part in (diagnosis.get("strength"), diagnosis.get("focus"), diagnosis.get("next_action")) if part)
+        return {"correct": diagnosis["status"] == "correct", "feedback": feedback_text, "diagnosis": diagnosis, "stage": flow["stage"], "attempt_count": len(flow["attempts"]), "hint_available": diagnosis["targeted_hint_available"], "response_type": flow["response_type"], "session_completed": session["status"] == "completed", "status": session["status"]}
     if sq["completed"]:
         return {"error": "This sub-question is already completed."}
     sq["attempts"].append(answer)
@@ -442,6 +471,18 @@ def reveal_answer(session_id):
         return {"error": "Idea sessions generate concepts directly instead of revealing an answer."}
     idx = session["current_sub_question_index"]
     sq = session["sub_questions"][idx]
+    if "academic_flow" in sq:
+        flow = sq["academic_flow"]
+        if not flow["attempts"]:
+            return {"error": "Submit an attempt before viewing the worked solution."}
+        if not flow["worked_solution"]:
+            flow["worked_solution"] = generate_worked_solution(sq["question"], flow["response_type"])
+        flow["stage"] = "solution_reviewed"
+        latest = flow["attempts"][-1]["text"]
+        solution = flow["worked_solution"]
+        if not solution.get("comparison_to_attempt"):
+            solution["comparison_to_attempt"] = "Compare the key steps here with your latest response."
+        return {"answer": solution["final_answer"], "worked_solution": solution, "stage": flow["stage"], "mode": "academic"}
     if session["exam_mode"]:
         return {"error": "Answer reveal is disabled in exam mode."}
     if len(sq["attempts"]) == 0:
