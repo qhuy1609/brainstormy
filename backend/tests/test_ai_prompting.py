@@ -39,6 +39,26 @@ def idea_payload():
 
 
 class AIPromptingTests(unittest.TestCase):
+    def test_single_derivation_does_not_call_decomposition_model(self):
+        with patch("services.ai_service.call_text_model") as call:
+            parts = ai_service.decompose_question("Derive $E_p = mgh$ for a mass lifted through height h.")
+        self.assertEqual(parts, ["Derive $E_p = mgh$ for a mass lifted through height h."])
+        call.assert_not_called()
+
+    def test_explicit_parts_are_preserved_in_order(self):
+        payload = {"sub_questions": ["(a) Define gravitational potential energy.", "(b) Derive the change in potential energy."]}
+        question = "(a) Define gravitational potential energy.\n(b) Derive the change in potential energy."
+        with patch("services.ai_service.call_text_model", return_value=json_text(payload)):
+            parts = ai_service.decompose_question(question)
+        self.assertEqual(parts, payload["sub_questions"])
+
+    def test_untrusted_decomposition_count_falls_back_to_original(self):
+        question = "(a) Define the quantity.\n(b) Apply it."
+        payload = {"sub_questions": ["Define it.", "Find force.", "Find work.", "Conclude."]}
+        with patch("services.ai_service.call_text_model", return_value=json_text(payload)):
+            parts = ai_service.decompose_question(question)
+        self.assertEqual(parts, [question])
+
     def test_academic_hints_keep_academic_prompt_and_boundaries(self):
         payload = {"hints": [
             {"stage": "concept", "content": "Use the factor theorem."},

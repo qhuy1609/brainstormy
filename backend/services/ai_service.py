@@ -476,7 +476,12 @@ def clean_idea_request(raw_text, *, force_llm_cleanup: bool = False):
 # ---------------------------------------------------------------------------
 
 def decompose_question(cleaned_question):
-    """Split a multi-part question into ordered sub-questions."""
+    """Split only explicitly labelled multi-part questions into ordered sub-questions."""
+    marker_pattern = re.compile(r"(?im)^\s*(?:\([a-z]\)|[a-z]\)|\d+[.)]|part\s+[a-z0-9]+\s*[:.)])\s+")
+    markers = marker_pattern.findall(cleaned_question)
+    if len(markers) < 2 or len(markers) > 6:
+        return [cleaned_question]
+
     result = _call_ai(
         [
             {"role": "system", "content": _academic_system_prompt()},
@@ -484,7 +489,9 @@ def decompose_question(cleaned_question):
                 "role": "user",
                 "content": (
                     f"{_user_content_boundary_instruction()}\n\n"
-                    "Split this question into ordered sub-questions only when it truly has multiple parts. "
+                    "The question contains explicit part markers. Split only at those existing markers; do not turn "
+                    "reasoning steps, definitions, or supporting calculations into extra parts. Return exactly the "
+                    "same number of non-empty parts as the visible markers, in their original order. "
                     "Return JSON only in this shape: {\"sub_questions\": [\"...\"]}. Keep each sub-question "
                     "clear and self-contained.\n\n"
                     f"{_wrap_user_content('academic_question', cleaned_question)}"
@@ -500,7 +507,9 @@ def decompose_question(cleaned_question):
         return [cleaned_question]
 
     cleaned_parts = [_clean_display_text(part) for part in sub_questions if _clean_display_text(part)]
-    return cleaned_parts or [cleaned_question]
+    if len(cleaned_parts) != len(markers) or len(set(cleaned_parts)) != len(cleaned_parts):
+        return [cleaned_question]
+    return cleaned_parts
 
 
 # ---------------------------------------------------------------------------
