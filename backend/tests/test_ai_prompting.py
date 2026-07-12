@@ -59,6 +59,19 @@ class AIPromptingTests(unittest.TestCase):
             parts = ai_service.decompose_question(question)
         self.assertEqual(parts, [question])
 
+    def test_required_concepts_are_generic_cleaned_and_deduplicated(self):
+        payload = {"requiredConcepts": ["  Quadratic equations ", "Factorisation", "factorisation", "Discriminant"]}
+        with patch("services.ai_service.call_text_model", return_value=json_text(payload)) as call:
+            concepts = ai_service.infer_required_concepts("Solve x^2 - 5x + 6 = 0.")
+        self.assertEqual(concepts, ["Quadratic equations", "Factorisation", "Discriminant"])
+        prompt = call.call_args.args[0][1]["content"]
+        self.assertIn("concepts, skills, methods, rules, or knowledge areas", prompt)
+        self.assertIn("requiredConcepts", prompt)
+
+    def test_required_concepts_fall_back_to_empty_when_structured_output_is_invalid(self):
+        with patch("services.ai_service.call_text_model", return_value="not json"):
+            self.assertEqual(ai_service.infer_required_concepts("Explain recursion."), [])
+
     def test_academic_hints_keep_academic_prompt_and_boundaries(self):
         payload = {"hints": [
             {"stage": "concept", "content": "Use the factor theorem."},

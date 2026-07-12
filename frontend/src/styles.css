@@ -754,6 +754,33 @@ body {
   line-height: 1.6;
 }
 
+.concept-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin: 0.9rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.concept-tag {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  border: 1px solid rgba(147, 197, 253, 0.24);
+  border-radius: 999px;
+  background: rgba(74, 158, 255, 0.1);
+  color: #dbeafe;
+  padding: 0.18rem 0.55rem;
+  font-size: 0.76rem;
+  line-height: 1.35;
+}
+
+.concept-tag .math-text,
+.concept-tag .math-text-inline {
+  color: inherit;
+}
+
 /* ===== Hint Card ===== */
 .hint-header {
   display: flex;

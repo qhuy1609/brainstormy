@@ -4,6 +4,7 @@ import HintCard from './HintCard.jsx'
 import AttemptBox from './AttemptBox.jsx'
 import FeedbackBox from './FeedbackBox.jsx'
 import MathText from './MathText.jsx'
+import ConceptTags from './ConceptTags.jsx'
 import IdeaSessionView from './IdeaSessionView.jsx'
 import { fetchSessionState, requestHint, submitAttempt, revealAnswer } from '../api/learningApi.js'
 
@@ -130,6 +131,7 @@ export default function SessionView({ initialSession, onReset, onError }) {
       <div className="card question-display-card">
         <div className="card-label">{totalParts > 1 ? `Part ${currentPart} of ${totalParts}` : 'Question'}</div>
         <div className="sub-question-text"><MathText>{session.current_sub_question}</MathText></div>
+        <ConceptTags concepts={session.requiredConcepts} />
       </div>
 
       {session.current_hint && <HintCard
@@ -172,9 +174,6 @@ export default function SessionView({ initialSession, onReset, onError }) {
               {revealedAnswer.steps?.map((step) => <li key={step.title}><h3>{step.title}</h3><MathText>{step.explanation}</MathText>{step.expression && <div className="solution-expression"><MathText>{step.expression}</MathText></div>}</li>)}
             </ol>
             <div className="solution-final-answer"><span>Final answer</span><MathText>{revealedAnswer.final_answer}</MathText></div>
-            {revealedAnswer.assumptions?.length > 0 && <div className="solution-assumptions"><strong>Assumptions</strong><ul>{revealedAnswer.assumptions.map((item) => <li key={item}><MathText>{item}</MathText></li>)}</ul></div>}
-            {revealedAnswer.comparison_to_attempt && <div className="solution-comparison"><strong>Compared with your attempt</strong><MathText>{revealedAnswer.comparison_to_attempt}</MathText></div>}
-            {revealedAnswer.reflection_question && <div className="solution-reflection"><strong>Reflect</strong><MathText>{revealedAnswer.reflection_question}</MathText></div>}
           </div>
         )}
 

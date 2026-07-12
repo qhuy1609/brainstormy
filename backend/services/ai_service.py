@@ -13,6 +13,7 @@ ACADEMIC_VALIDATION_PROMPT_VERSION = "academic-validation-v2"
 IDEA_VALIDATION_PROMPT_VERSION = "idea-validation-v2"
 ACADEMIC_HINT_PROMPT_VERSION = "academic-hints-v2"
 ACADEMIC_RESPONSE_TYPE_PROMPT_VERSION = "academic-response-type-v1"
+ACADEMIC_CONCEPTS_PROMPT_VERSION = "academic-concepts-v1"
 ACADEMIC_DIAGNOSIS_PROMPT_VERSION = "academic-diagnosis-v1"
 ACADEMIC_TARGETED_HINT_PROMPT_VERSION = "academic-targeted-hint-v1"
 ACADEMIC_WORKED_SOLUTION_PROMPT_VERSION = "academic-worked-solution-v1"
@@ -512,6 +513,54 @@ def decompose_question(cleaned_question):
     return cleaned_parts
 
 
+def infer_required_concepts(question: str) -> list[str]:
+    """Return a short, subject-neutral list of knowledge areas relevant to a question."""
+    def validate(value: Any) -> list[str]:
+        if not isinstance(value, dict) or not isinstance(value.get("requiredConcepts"), list):
+            raise AIServiceError("Academic concepts must be a list.")
+
+        concepts = []
+        seen = set()
+        for item in value["requiredConcepts"]:
+            if not isinstance(item, str):
+                continue
+            concept = _clean_display_text(item)
+            key = concept.casefold()
+            if not concept or key in seen:
+                continue
+            if len(concept) > 120:
+                raise AIServiceError("Academic concept is too long.")
+            seen.add(key)
+            concepts.append(concept)
+
+        return concepts[:8]
+
+    try:
+        return _call_json_with_repair(
+            [
+                {"role": "system", "content": _academic_system_prompt()},
+                {
+                    "role": "user",
+                    "content": (
+                        f"Prompt version: {ACADEMIC_CONCEPTS_PROMPT_VERSION}\n"
+                        f"{_user_content_boundary_instruction()}\n\n"
+                        "Identify 1-6 concise concepts, skills, methods, rules, or knowledge areas that could help "
+                        "answer this question. Use the question's language. Be domain-agnostic: do not label or infer "
+                        "a school subject, difficulty, correctness, hints, or an answer. Return JSON only in this shape: "
+                        "{\"requiredConcepts\": [\"...\"]}.\n\n"
+                        f"{_wrap_user_content('academic_question', question)}"
+                    ),
+                },
+            ],
+            validator=validate,
+            temperature=0,
+            prompt_version=ACADEMIC_CONCEPTS_PROMPT_VERSION,
+        )
+    except AIServiceError:
+        logger.warning("Could not infer required concepts; continuing without concept tags.")
+        return []
+
+
 # ---------------------------------------------------------------------------
 # Generate 3 hint levels
 # ---------------------------------------------------------------------------
@@ -642,14 +691,14 @@ def generate_worked_solution(question: str, response_type: dict[str, str]) -> di
         for step in steps:
             if not isinstance(step, dict): raise AIServiceError("Worked solution steps must be objects.")
             cleaned_steps.append({"title": _clean_short_text(step.get("title"), maximum=80), "explanation": _clean_short_text(step.get("explanation"), maximum=420), "expression": _clean_short_text(step.get("expression"), required=False, maximum=400) or None})
-        return {"summary": _clean_short_text(value.get("summary"), maximum=300), "steps": cleaned_steps, "final_answer": _clean_short_text(value.get("final_answer"), maximum=500), "assumptions": [_clean_short_text(item, maximum=180) for item in (value.get("assumptions") or [])[:3]], "comparison_to_attempt": _clean_short_text(value.get("comparison_to_attempt"), required=False, maximum=360) or None, "reflection_question": _clean_short_text(value.get("reflection_question"), required=False, maximum=240) or None}
+        return {"summary": _clean_short_text(value.get("summary"), maximum=300), "steps": cleaned_steps, "final_answer": _clean_short_text(value.get("final_answer"), maximum=500)}
     try:
         return _call_json_with_repair([
         {"role": "system", "content": _academic_system_prompt()},
-        {"role": "user", "content": f"Prompt version: {ACADEMIC_WORKED_SOLUTION_PROMPT_VERSION}\n{_user_content_boundary_instruction()}\n\nReturn a concise structured worked solution, not a paragraph. Return JSON only with summary, steps (2-5 objects with title, explanation, expression or null), final_answer, assumptions, comparison_to_attempt, reflection_question. Use renderer-compatible LaTex for maths, e.g. $W_{{\\text{{gravity}}}} = -mgh$, never raw identifiers such as W_gravity or E_p when mathematical notation is intended. Keep only essential reasoning; do not add unnecessary assumptions or repeat the final result. Adapt steps to the task type; preserve code in Markdown code formatting.\n\n{_wrap_user_content('academic_question', question)}\n\n{_wrap_user_content('response_type_json', _academic_schema_text(response_type))}"},
+        {"role": "user", "content": f"Prompt version: {ACADEMIC_WORKED_SOLUTION_PROMPT_VERSION}\n{_user_content_boundary_instruction()}\n\nReturn a concise structured worked solution, not a paragraph. Return JSON only with summary, steps (2-5 objects with title, explanation, expression or null), and final_answer. Use renderer-compatible LaTex for maths, e.g. $W_{{\\text{{gravity}}}} = -mgh$, never raw identifiers such as W_gravity or E_p when mathematical notation is intended. Keep only essential reasoning and do not repeat the final result. Adapt steps to the task type; preserve code in Markdown code formatting.\n\n{_wrap_user_content('academic_question', question)}\n\n{_wrap_user_content('response_type_json', _academic_schema_text(response_type))}"},
     ], validator=validate, temperature=0, prompt_version=ACADEMIC_WORKED_SOLUTION_PROMPT_VERSION)
     except AIServiceError:
-        return {"summary": "Review the essential reasoning below.", "steps": [{"title": "Use the relevant method", "explanation": "Apply the relationship or principle that directly addresses the question.", "expression": None}, {"title": "State the conclusion", "explanation": "Check that your conclusion answers the original task.", "expression": None}], "final_answer": "See the worked reasoning above.", "assumptions": [], "comparison_to_attempt": None, "reflection_question": None}
+        return {"summary": "Review the essential reasoning below.", "steps": [{"title": "Use the relevant method", "explanation": "Apply the relationship or principle that directly addresses the question.", "expression": None}, {"title": "State the conclusion", "explanation": "Check that your conclusion answers the original task.", "expression": None}], "final_answer": "See the worked reasoning above."}
 
 
 # ---------------------------------------------------------------------------

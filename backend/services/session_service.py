@@ -15,6 +15,7 @@ from services.ai_service import (
     check_attempt,
     generate_explanation,
     infer_academic_response_type,
+    infer_required_concepts,
     generate_initial_academic_hint,
     diagnose_academic_attempt,
     generate_targeted_academic_hint,
@@ -221,6 +222,7 @@ def create_session(raw_input, input_type, image_file, exam_mode, mode="academic"
         response_type = infer_academic_response_type(sq_text)
         sub_questions.append({
             "question": sq_text,
+            "required_concepts": infer_required_concepts(sq_text),
             "academic_flow": {"stage": "initial_attempt", "response_type": response_type, "attempts": [], "hints": [], "worked_solution": None},
             "attempts": [],
             "completed": False,
@@ -250,6 +252,7 @@ def create_session(raw_input, input_type, image_file, exam_mode, mode="academic"
         "total_sub_questions": len(sub_questions),
         "current_sub_question_index": 0,
         "current_sub_question": first_sq["question"],
+        "requiredConcepts": first_sq["required_concepts"],
         "response_type": first_sq["academic_flow"]["response_type"],
         "stage": "initial_attempt",
         "attempt_count": 0,
@@ -269,7 +272,7 @@ def get_session_state(session_id):
     sq = session["sub_questions"][idx]
     flow = sq.get("academic_flow")
     if flow:
-        return {"session_id": session_id, "mode": "academic", "cleaned_question": session["cleaned_question"], "is_multi_part": len(session["sub_questions"]) > 1, "total_sub_questions": len(session["sub_questions"]), "current_sub_question_index": idx, "current_sub_question": sq["question"], "status": session["status"], "stage": flow["stage"], "response_type": flow["response_type"], "attempt_count": len(flow["attempts"]), "hint_available": True, "current_hint": flow["hints"][-1] if flow["hints"] else None, "worked_solution": flow["worked_solution"]}
+        return {"session_id": session_id, "mode": "academic", "cleaned_question": session["cleaned_question"], "is_multi_part": len(session["sub_questions"]) > 1, "total_sub_questions": len(session["sub_questions"]), "current_sub_question_index": idx, "current_sub_question": sq["question"], "requiredConcepts": sq.get("required_concepts", []), "status": session["status"], "stage": flow["stage"], "response_type": flow["response_type"], "attempt_count": len(flow["attempts"]), "hint_available": True, "current_hint": flow["hints"][-1] if flow["hints"] else None, "worked_solution": flow["worked_solution"]}
     return {
         "session_id": session_id,
         "mode": "academic",
@@ -478,10 +481,7 @@ def reveal_answer(session_id):
         if not flow["worked_solution"]:
             flow["worked_solution"] = generate_worked_solution(sq["question"], flow["response_type"])
         flow["stage"] = "solution_reviewed"
-        latest = flow["attempts"][-1]["text"]
         solution = flow["worked_solution"]
-        if not solution.get("comparison_to_attempt"):
-            solution["comparison_to_attempt"] = "Compare the key steps here with your latest response."
         return {"answer": solution["final_answer"], "worked_solution": solution, "stage": flow["stage"], "mode": "academic"}
     if session["exam_mode"]:
         return {"error": "Answer reveal is disabled in exam mode."}
