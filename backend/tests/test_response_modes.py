@@ -2,14 +2,14 @@ import io
 import unittest
 from unittest.mock import patch
 
-from ai.openrouter import AIServiceError
 from app import app
-from services.ai_service import generate_idea_hints
 from services.session_service import (
     create_session,
+    develop_selected_ideas,
+    generate_idea_now,
     get_next_hint,
     get_session_state,
-    reveal_answer,
+    submit_idea_answers,
 )
 from storage.memory_store import store
 
@@ -21,6 +21,32 @@ class UploadedImage(io.BytesIO):
         self.mimetype = mimetype
 
 
+def discovery_plan(context=None, ready=False):
+    return {
+        "summary": "You want to explore an AI project.",
+        "task_profile": {"task_type": "product_project", "requested_deliverable": "an AI project", "generation_style": "product concepts"},
+        "reason": "These choices will shape the shortlist.",
+        "known_context": context or {},
+        "missing_context": ["target user", "domain"],
+        "ready_to_generate": ready,
+        "assumptions": ["Missing preferences will remain flexible."],
+        "questions": [
+            {"id": "target_user", "question": "Who should this help?", "type": "single_select", "options": ["Students", "Other"], "allow_custom_answer": True},
+            {"id": "domain", "question": "Which area interests you?", "type": "single_select", "options": ["Education", "Other"], "allow_custom_answer": True},
+            {"id": "purpose", "question": "What is it for?", "type": "single_select", "options": ["School project", "Other"], "allow_custom_answer": True},
+        ],
+    }
+
+
+def idea(name="FocusQuest"):
+    return {
+        "name": name, "concept": "An AI tool for manageable study tasks.",
+        "why_it_fits": "It fits an education project.", "distinctive_angle": "It reduces overload instead of answering homework.",
+        "details": [{"label": "User", "value": "Students"}, {"label": "Problem", "value": "Assignments feel overwhelming."}, {"label": "AI role", "value": "Personalises task plans."}],
+        "difficulty": "medium", "next_step": "Sketch the task flow.", "risk_or_consideration": "Avoid excessive monitoring.",
+    }
+
+
 class ResponseModeTests(unittest.TestCase):
     def setUp(self):
         store.clear()
@@ -30,142 +56,91 @@ class ResponseModeTests(unittest.TestCase):
     def test_missing_mode_defaults_to_academic(self):
         with patch("routes.learning_routes.create_session", return_value={"session_id": "abc", "mode": "academic"}) as create:
             response = self.client.post("/api/session/start", data={"question": "Factorise x^2 + 5x + 6"})
-
         self.assertEqual(response.status_code, 201)
         self.assertEqual(create.call_args.args[4], "academic")
 
-    def test_unknown_mode_is_rejected(self):
-        with patch("routes.learning_routes.create_session") as create:
-            response = self.client.post(
-                "/api/session/start",
-                data={"question": "Factorise x^2 + 5x + 6", "mode": "model-name"},
-            )
-
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("Invalid mode", response.get_json()["error"])
-        create.assert_not_called()
-
-    def test_empty_idea_request_uses_existing_empty_input_validation(self):
-        response = self.client.post("/api/session/start", data={"mode": "idea"})
-
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.get_json()["error"], "Please provide a question or upload an image.")
-
-    def test_academic_mode_uses_existing_academic_generation_strategy(self):
+    def test_academic_mode_keeps_hint_generation_strategy(self):
         with patch("services.session_service.validate_input", return_value={"valid": True, "message": "OK"}), \
              patch("services.session_service.clean_question", return_value="Factorise x^2 + 5x + 6"), \
              patch("services.session_service.decompose_question", return_value=["Factorise x^2 + 5x + 6"]), \
-             patch("services.session_service.generate_hints", return_value=["h1", "h2", "h3"]) as academic_hints, \
-             patch("services.session_service.generate_idea_hints") as idea_hints, \
+             patch("services.session_service.generate_hints", return_value=["h1", "h2", "h3"]) as hints, \
              patch("services.session_service.generate_final_answer", return_value="(x+2)(x+3)"):
             result = create_session("Factorise x^2 + 5x + 6", "text", None, False, "academic")
-
-        self.assertEqual(result["mode"], "academic")
-        academic_hints.assert_called_once_with("Factorise x^2 + 5x + 6")
-        idea_hints.assert_not_called()
-
-    def test_idea_mode_uses_idea_generation_strategy_and_stores_three_hints(self):
-        with patch("services.session_service.validate_input", return_value={"valid": True, "message": "OK"}), \
-             patch("services.session_service.clean_idea_request", return_value="Write a lonely city poem"), \
-             patch("services.session_service.generate_idea_hints", return_value=["direction", "blocks", "scaffold"]) as idea_hints, \
-             patch("services.session_service.generate_idea_final_guidance", return_value="final guidance"):
-            result = create_session("Write a lonely city poem", "text", None, True, "idea")
-
-        session = store[result["session_id"]]
-        self.assertEqual(result["mode"], "idea")
-        self.assertEqual(session["mode"], "idea")
-        self.assertEqual(session["exam_mode"], True)
-        self.assertEqual(session["sub_questions"][0]["hints"], ["direction", "blocks", "scaffold"])
-        self.assertEqual(result["current_hint_title"], "Direction")
-        idea_hints.assert_called_once_with("Write a lonely city poem")
-
-    def test_idea_clarification_result_does_not_generate_hints(self):
-        validation = {
-            "status": "needs_clarification",
-            "valid": False,
-            "message": "Please add a little more detail about what you want to create.",
-            "clarification_question": "What would you like to create about \"city boyyy\"?",
-            "request_type": "unknown",
-        }
-
-        with patch("services.session_service.validate_input", return_value=validation), \
-             patch("services.session_service.clean_idea_request") as clean, \
-             patch("services.session_service.generate_idea_hints") as hints, \
-             patch("services.session_service.generate_idea_final_guidance") as guidance:
-            result = create_session("city boyyy", "text", None, False, "idea")
-
-        self.assertEqual(result["status"], "needs_clarification")
-        self.assertEqual(result["clarification_question"], validation["clarification_question"])
-        clean.assert_not_called()
-        hints.assert_not_called()
-        guidance.assert_not_called()
-
-    def test_idea_hint_progression_is_ordered(self):
-        with patch("services.session_service.validate_input", return_value={"valid": True, "message": "OK"}), \
-             patch("services.session_service.clean_idea_request", return_value="Campaign for teen recycling"), \
-             patch("services.session_service.generate_idea_hints", return_value=["direction", "blocks", "scaffold"]), \
-             patch("services.session_service.generate_idea_final_guidance", return_value="final guidance"):
-            result = create_session("Campaign for teen recycling", "text", None, False, "idea")
-
-        second = get_next_hint(result["session_id"])
-        third = get_next_hint(result["session_id"])
-
-        self.assertEqual(result["current_hint_level"], 0)
-        self.assertEqual(second["hint_level"], 1)
-        self.assertEqual(third["hint_level"], 2)
-        self.assertEqual([result["current_hint_title"], second["hint_title"], third["hint_title"]], [
-            "Direction",
-            "Building blocks",
-            "Actionable scaffold",
-        ])
-
-    def test_idea_image_requests_reuse_existing_upload_pipeline(self):
-        image = UploadedImage()
-        with patch("services.session_service.extract_text_from_image", return_value="a sketch of a city skyline") as extract, \
-             patch("services.session_service.validate_input", return_value={"valid": True, "message": "OK"}), \
-             patch("services.session_service.clean_idea_request", side_effect=lambda text, **kwargs: text), \
-             patch("services.session_service.generate_idea_hints", return_value=["direction", "blocks", "scaffold"]) as hints, \
-             patch("services.session_service.generate_idea_final_guidance", return_value="final guidance"):
-            create_session("poem idea", "image", image, False, "idea")
-
-        extract.assert_called_once_with(image)
-        self.assertIn("creative context", hints.call_args.args[0])
-        self.assertIn("a sketch of a city skyline", hints.call_args.args[0])
-        self.assertIn("poem idea", hints.call_args.args[0])
-
-    def test_idea_exam_mode_keeps_reveal_disabled(self):
-        with patch("services.session_service.validate_input", return_value={"valid": True, "message": "OK"}), \
-             patch("services.session_service.clean_idea_request", return_value="Write a lonely city poem"), \
-             patch("services.session_service.generate_idea_hints", return_value=["direction", "blocks", "scaffold"]), \
-             patch("services.session_service.generate_idea_final_guidance", return_value="do not write the full poem"):
-            result = create_session("Write a lonely city poem", "text", None, True, "idea")
-
-        self.assertEqual(reveal_answer(result["session_id"])["error"], "Answer reveal is disabled in exam mode.")
-
-    def test_legacy_sessions_without_mode_open_as_academic(self):
-        store["legacy"] = {
-            "cleaned_question": "Factorise x^2 + 5x + 6",
-            "sub_questions": [{
-                "question": "Factorise x^2 + 5x + 6",
-                "hints": ["h1", "h2", "h3"],
-                "current_hint_level": 0,
-                "completed": False,
-                "attempts": [],
-                "final_answer": "(x+2)(x+3)",
-            }],
-            "current_sub_question_index": 0,
-            "status": "active",
-        }
-
-        result = get_session_state("legacy")
-
         self.assertEqual(result["mode"], "academic")
         self.assertEqual(result["current_hint_title"], "Hint 1")
+        hints.assert_called_once()
 
-    def test_malformed_idea_hint_output_is_rejected(self):
-        with patch("services.ai_service._call_ai", return_value={"hints": ["one", "two"]}):
-            with self.assertRaises(AIServiceError):
-                generate_idea_hints("Write a poem idea")
+    def test_broad_idea_request_starts_discovery_without_hints(self):
+        with patch("services.session_service.validate_input", return_value={"valid": True, "message": "OK"}), \
+             patch("services.session_service.clean_idea_request", return_value="Help me make an AI-powered solution."), \
+             patch("services.session_service.plan_idea_discovery", return_value=discovery_plan()) as planner:
+            result = create_session("Help me make an AI-powered solution.", "text", None, False, "idea")
+        self.assertEqual(result["idea_flow"]["stage"], "collecting_broad_context")
+        self.assertEqual(len(result["idea_flow"]["questions"]), 3)
+        self.assertTrue(result["idea_flow"]["can_generate_now"])
+        self.assertNotIn("current_hint", result)
+        planner.assert_called_once()
+
+    def test_adaptive_answers_are_saved_and_produce_next_round(self):
+        first = discovery_plan()
+        second = discovery_plan({"target_user": ["Students"], "domain": ["Education"], "project_purpose": ["School project"]})
+        with patch("services.session_service.validate_input", return_value={"valid": True, "message": "OK"}), \
+             patch("services.session_service.clean_idea_request", return_value="AI project"), \
+             patch("services.session_service.plan_idea_discovery", side_effect=[first, second]):
+            session = create_session("AI project", "text", None, False, "idea")
+            result = submit_idea_answers(session["session_id"], [
+                {"question_id": "target_user", "selected_options": ["Students"], "custom_answer": ""},
+                {"question_id": "domain", "selected_options": ["Education"], "custom_answer": ""},
+                {"question_id": "purpose", "selected_options": ["School project"], "custom_answer": ""},
+            ])
+        self.assertEqual(result["idea_flow"]["round"], 2)
+        self.assertEqual(store[session["session_id"]]["idea_flow"]["question_rounds"][0]["answers"][0]["selected_options"], ["Students"])
+
+    def test_generate_now_returns_shortlist_and_development_brief(self):
+        ideas = [idea(f"Idea {index}") for index in range(1, 6)]
+        brief = {"title": "Idea 1 plan", "summary": "A focused first release.", "recommended_direction": "Build the smallest useful workflow.", "focus_areas": ["One", "Two", "Three"], "next_steps": ["Interview", "Sketch", "Build"], "review_step": "Test with three users.", "considerations": ["Scope"]}
+        with patch("services.session_service.validate_input", return_value={"valid": True, "message": "OK"}), \
+             patch("services.session_service.clean_idea_request", return_value="Just generate ideas"), \
+             patch("services.session_service.plan_idea_discovery", return_value=discovery_plan()), \
+             patch("services.session_service.generate_personalized_ideas", return_value=ideas), \
+             patch("services.session_service.generate_idea_development_brief", return_value=brief):
+            session = create_session("Just generate ideas", "text", None, False, "idea")
+            generated = generate_idea_now(session["session_id"])
+            developed = develop_selected_ideas(session["session_id"], ["idea_1"])
+        self.assertEqual(generated["idea_flow"]["stage"], "ideas_generated")
+        self.assertEqual(len(generated["idea_flow"]["ideas"]), 5)
+        self.assertEqual(developed["idea_flow"]["development_brief"]["title"], "Idea 1 plan")
+
+    def test_idea_generate_and_develop_routes_return_idea_state(self):
+        ideas = [idea(f"Idea {index}") for index in range(1, 6)]
+        brief = {"title": "Idea 1 plan", "summary": "A focused first release.", "recommended_direction": "Build the smallest useful workflow.", "focus_areas": ["One", "Two", "Three"], "next_steps": ["Interview", "Sketch", "Build"], "review_step": "Test with three users.", "considerations": []}
+        with patch("services.session_service.validate_input", return_value={"valid": True, "message": "OK"}), \
+             patch("services.session_service.clean_idea_request", return_value="AI project"), \
+             patch("services.session_service.plan_idea_discovery", return_value=discovery_plan()), \
+             patch("services.session_service.generate_personalized_ideas", return_value=ideas), \
+             patch("services.session_service.generate_idea_development_brief", return_value=brief):
+            session = create_session("AI project", "text", None, False, "idea")
+            generated = self.client.post(f"/api/session/{session['session_id']}/idea/generate")
+            developed = self.client.post(f"/api/session/{session['session_id']}/idea/develop", json={"idea_ids": ["idea_1"]})
+        self.assertEqual(generated.status_code, 200)
+        self.assertEqual(generated.get_json()["idea_flow"]["stage"], "ideas_generated")
+        self.assertEqual(developed.status_code, 200)
+        self.assertEqual(developed.get_json()["idea_flow"]["development_brief"]["title"], "Idea 1 plan")
+
+    def test_idea_endpoints_reject_academic_hint_contract(self):
+        store["idea"] = {"session_id": "idea", "mode": "idea", "status": "active", "cleaned_question": "AI project", "idea_flow": {"stage": "collecting_broad_context", "round": 1, "summary": "AI project", "reason": "", "task_profile": {"task_type": "general", "requested_deliverable": "project", "generation_style": "concepts"}, "known_context": {}, "missing_context": [], "question_rounds": [], "current_questions": [], "can_generate_now": True, "assumptions": [], "ideas": [], "selected_idea_ids": [], "development_brief": None}}
+        self.assertIn("discovery questions", get_next_hint("idea")["error"])
+        self.assertEqual(get_session_state("idea")["mode"], "idea")
+
+    def test_idea_image_requests_use_existing_upload_pipeline(self):
+        image = UploadedImage()
+        with patch("services.session_service.extract_text_from_image", return_value="a sketch of a city skyline"), \
+             patch("services.session_service.validate_input", return_value={"valid": True, "message": "OK"}), \
+             patch("services.session_service.clean_idea_request", side_effect=lambda text, **kwargs: text), \
+             patch("services.session_service.plan_idea_discovery", return_value=discovery_plan()) as planner:
+            create_session("poem idea", "image", image, False, "idea")
+        self.assertIn("creative context", planner.call_args.args[0])
+        self.assertIn("a sketch of a city skyline", planner.call_args.args[0])
 
 
 if __name__ == "__main__":

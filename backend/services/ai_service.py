@@ -12,10 +12,9 @@ logger = logging.getLogger(__name__)
 ACADEMIC_VALIDATION_PROMPT_VERSION = "academic-validation-v2"
 IDEA_VALIDATION_PROMPT_VERSION = "idea-validation-v2"
 ACADEMIC_HINT_PROMPT_VERSION = "academic-hints-v2"
-IDEA_HINT_PROMPT_VERSION = "idea-hints-v2"
-IDEA_ATTEMPT_PROMPT_VERSION = "idea-attempt-v2"
-IDEA_EXPLANATION_PROMPT_VERSION = "idea-explanation-v2"
-IDEA_FINAL_GUIDANCE_PROMPT_VERSION = "idea-final-guidance-v2"
+IDEA_DISCOVERY_PROMPT_VERSION = "idea-discovery-v1"
+IDEA_GENERATION_PROMPT_VERSION = "idea-generation-v1"
+IDEA_DEVELOPMENT_PROMPT_VERSION = "idea-development-v1"
 
 RESPONSE_MODES = {"academic", "idea"}
 IDEA_VALIDATION_STATUSES = {"valid", "needs_clarification", "invalid"}
@@ -24,42 +23,16 @@ MAX_INPUT_CHARS = 12000
 MIN_HINT_CHARS = 12
 MAX_HINT_CHARS = 1600
 ACADEMIC_HINT_STAGES = ["concept", "method", "near_solution"]
-IDEA_HINT_STAGES = ["direction", "building_blocks", "actionable_scaffold"]
-IDEA_ACTION_TERMS = {
-    "brainstorm",
-    "come up",
-    "create",
-    "develop",
-    "design",
-    "give me",
-    "help",
-    "i need",
-    "i want",
-    "make",
-    "need",
-    "plan",
-    "want",
-    "write",
-}
-IDEA_OUTPUT_TERMS = {
-    "art",
-    "brand",
-    "campaign",
-    "character",
-    "concept",
-    "design",
-    "essay",
-    "name",
-    "names",
-    "poem",
-    "poetry",
-    "poster",
-    "presentation",
-    "product",
-    "project",
-    "song",
-    "speech",
-    "story",
+IDEA_TASK_TYPES = {"creative_writing", "product_project", "design", "campaign", "naming", "presentation", "general"}
+IDEA_QUESTION_TYPES = {"single_select", "multi_select", "short_text"}
+IDEA_DIFFICULTIES = {"low", "medium", "high"}
+LANGUAGE_NAMES = {
+    "en": "English",
+    "zh": "Chinese",
+    "ar": "Arabic",
+    "ru": "Russian",
+    "ja": "Japanese",
+    "ko": "Korean",
 }
 
 
@@ -86,9 +59,9 @@ def _academic_system_prompt() -> str:
 def _idea_system_prompt() -> str:
     return (
         _base_system_prompt()
-        + " You are operating in Idea mode. Act as a creative thinking coach. "
-        "Help the user develop an original direction, useful building blocks, "
-        "and an actionable scaffold without unnecessarily completing the work."
+        + " You are operating in Idea mode. Act as an adaptive brainstorming coach. "
+        "First learn only the information that materially improves the options, then "
+        "produce diverse, practical concepts without treating creativity as a quiz."
     )
 
 
@@ -190,7 +163,8 @@ def _call_json_with_repair(
     try:
         return validator(_call_ai(repair_messages, temperature=0, json_mode=True))
     except (AIServiceError, ValueError, TypeError) as exc:
-        raise AIServiceError("The text model returned an unsupported structured response.") from exc
+        logger.warning("Structured response remained invalid after repair for prompt_version=%s: %s", prompt_version, exc)
+        raise AIServiceError("The text model returned an invalid structured response. Please try again.") from exc
 
 
 def _validate_mode(mode: str) -> str:
@@ -235,10 +209,16 @@ def _deterministic_validation(input_text: Any, mode: str) -> dict[str, Any] | No
             "request_type": "unknown",
         }
 
-    if mode == "idea":
-        idea_result = _deterministic_idea_validation(cleaned)
-        if idea_result:
-            return idea_result
+    if mode == "idea" and _looks_like_meaningless_noise(cleaned):
+        return {
+            "status": "invalid",
+            "valid": False,
+            "reason_code": "meaningless_input",
+            "message": "Please provide a clearer idea request.",
+            "clarification_question": None,
+            "request_type": "unknown",
+            "needs_clarification": False,
+        }
 
     return None
 
@@ -287,7 +267,7 @@ def _idea_validation_from_result(result: Any) -> dict[str, Any]:
 
 def _looks_like_meaningless_noise(text: str) -> bool:
     lowered = text.lower().strip()
-    alnum = re.sub(r"[^a-z0-9]", "", lowered)
+    alnum = "".join(char for char in lowered if char.isalnum())
     if not alnum:
         return True
     if len(alnum) >= 5 and len(set(alnum)) <= 2:
@@ -295,61 +275,6 @@ def _looks_like_meaningless_noise(text: str) -> bool:
     if re.fullmatch(r"(asdf|qwer|zxcv|hjkl|dfgh|sdfg|jkl)[a-z]*", lowered):
         return True
     return False
-
-
-def _infer_fragment_request_type(lowered: str) -> str:
-    if any(term in lowered for term in ("poem", "poetry")):
-        return "poetry"
-    if "story" in lowered:
-        return "story"
-    if "project" in lowered:
-        return "project"
-    if "name" in lowered or "brand" in lowered:
-        return "naming"
-    if "design" in lowered or "poster" in lowered or "art" in lowered:
-        return "design"
-    if "campaign" in lowered:
-        return "campaign"
-    if "presentation" in lowered:
-        return "presentation"
-    return "unknown"
-
-
-def _clarification_question_for_fragment(text: str) -> str:
-    topic = text.strip()
-    return f"What would you like to create about \"{topic}\" - a poem, story, character, song, campaign, or something else?"
-
-
-def _deterministic_idea_validation(text: str) -> dict[str, Any] | None:
-    lowered = text.lower()
-    words = re.findall(r"[a-zA-Z0-9']+", lowered)
-    if _looks_like_meaningless_noise(text):
-        return {
-            "status": "invalid",
-            "valid": False,
-            "reason_code": "meaningless_input",
-            "message": "Please provide a clearer creative request.",
-            "clarification_question": None,
-            "request_type": "unknown",
-            "needs_clarification": False,
-        }
-
-    has_action = any(term in lowered for term in IDEA_ACTION_TERMS)
-    has_output = any(re.search(rf"\b{re.escape(term)}\b", lowered) for term in IDEA_OUTPUT_TERMS)
-    has_connector_context = bool(re.search(r"\b(about|for|called|aimed at|based on|inspired by)\b", lowered))
-
-    if len(words) <= 3 and not (has_action and (has_output or has_connector_context)):
-        return {
-            "status": "needs_clarification",
-            "valid": False,
-            "reason_code": "missing_creative_intent",
-            "message": "Please add a little more detail about what you want to create.",
-            "clarification_question": _clarification_question_for_fragment(text),
-            "request_type": _infer_fragment_request_type(lowered),
-            "needs_clarification": True,
-        }
-
-    return None
 
 
 def _validate_hint_objects(result: Any, expected_stages: list[str]) -> list[dict[str, str]]:
@@ -451,19 +376,11 @@ def validate_idea_input(input_text):
                 "content": (
                     f"Prompt version: {IDEA_VALIDATION_PROMPT_VERSION}\n"
                     f"{_user_content_boundary_instruction()}\n\n"
-                    "You are validating input for an Idea-development assistant. Classify the input into "
-                    "exactly one status:\n"
-                    "valid: The user expresses an actionable intention to create, develop, plan, name, "
-                    "design, write, or brainstorm something, and provides enough context to generate useful "
-                    "progressive hints.\n"
-                    "needs_clarification: The input contains an understandable topic, phrase, object, mood, "
-                    "or category, but does not say what the user wants to do with it or lacks enough context "
-                    "for useful hints.\n"
-                    "invalid: The input is empty, meaningless, impossible to interpret, unsupported, or unsafe.\n\n"
-                    "Do not invent missing intent. Do not infer tone, genre, audience, personality, or meaning "
-                    "from repeated letters, slang, spelling mistakes, punctuation, or capitalization. Do not "
-                    "reject it because it has no objectively correct answer when the request is otherwise actionable. "
-                    "Do not fulfill the request. Return JSON only in this shape: "
+                    "You are validating input for an adaptive idea-discovery assistant. A short, broad, "
+                    "non-English, or code-switched request is valid when it provides an understandable topic "
+                    "or asks for ideas; discovery questions will collect missing details. Mark invalid only for "
+                    "meaningless, unsupported, or unsafe input. Do not use English keyword matching as a proxy "
+                    "for intent, and do not invent preferences. Do not fulfill the request. Return JSON only in this shape: "
                     "{\"status\": \"valid | needs_clarification | invalid\", \"valid\": true/false, "
                     "\"message\": \"short user-facing message\", \"clarification_question\": \"question or null\", "
                     "\"request_type\": \"poetry | story | project | naming | design | campaign | presentation | other | unknown\"}.\n\n"
@@ -618,52 +535,8 @@ def generate_hints(question):
     return result
 
 
-def generate_idea_hints(request_text):
-    """Return exactly 3 progressive creative hints for Idea mode."""
-    result = _call_json_with_repair(
-        [
-            {"role": "system", "content": _idea_system_prompt()},
-            {
-                "role": "user",
-                "content": (
-                    f"Prompt version: {IDEA_HINT_PROMPT_VERSION}\n"
-                    f"{_user_content_boundary_instruction()}\n\n"
-                    "Before producing the result, silently identify the task type, user goal, intended audience, "
-                    "tone, genre, format, explicit constraints, language, whether the user asked for one direction "
-                    "or multiple alternatives, and missing context. Do not return that analysis.\n\n"
-                    "Create exactly three progressive Idea-mode hints. Use this exact JSON schema: "
-                    f"{_as_json_schema_text(IDEA_HINT_STAGES)}\n\n"
-                    "direction: choose one strong central direction, theme, perspective, emotional core, or "
-                    "creative tension. Explain why it fits. Narrow broad requests where useful. Avoid generic advice.\n"
-                    "building_blocks: develop the direction with concrete request-specific material such as imagery, "
-                    "motifs, tone, structure, characters, setting, constraints, mechanics, audience, contrast, "
-                    "visual identity, or techniques.\n"
-                    "actionable_scaffold: turn the previous hints into a practical starting framework, such as an "
-                    "outline, sequence, template, opening strategy, decision framework, seed options, or partial "
-                    "structure. Make starting easy without completing the finished work.\n\n"
-                    "Each hint must build directly on the previous one and add new information. Avoid generic phrases "
-                    "such as 'be creative' or 'think about your audience'. Respect every user constraint. Use the "
-                    "same language as the request. Do not claim there is one objectively correct creative solution. "
-                    "Do not produce three unrelated ideas unless alternatives were explicitly requested. Do not "
-                    "complete the entire poem, story, essay, campaign, speech, or project.\n\n"
-                    "Use only details explicitly stated by the user. Reasonable creative expansion is allowed only "
-                    "after the task itself is clear. Do not treat repeated letters as evidence of tone. Do not assign "
-                    "a gender, setting, genre, audience, emotional meaning, or backstory unless stated or clearly "
-                    "necessary. Clearly frame optional additions as suggestions rather than facts.\n\n"
-                    f"{_wrap_user_content('creative_request', request_text)}"
-                ),
-            },
-        ],
-        validator=lambda value: _hint_contents(value, IDEA_HINT_STAGES),
-        temperature=0.7,
-        prompt_version=IDEA_HINT_PROMPT_VERSION,
-    )
-
-    return result
-
-
 # ---------------------------------------------------------------------------
-# Generate final answer / guidance
+# Generate final answer
 # ---------------------------------------------------------------------------
 
 def generate_final_answer(question):
@@ -682,35 +555,6 @@ def generate_final_answer(question):
             },
         ],
         temperature=0,
-    )
-    return _clean_display_text(text)
-
-
-def generate_idea_final_guidance(request_text, hints: list[str] | None = None):
-    """Generate a revealable launch point after Idea-mode hints."""
-    hint_context = ""
-    if hints:
-        hint_context = "\n\n" + _wrap_user_content("previous_hints", "\n".join(f"{i + 1}. {hint}" for i, hint in enumerate(hints)))
-
-    text = _call_ai(
-        [
-            {"role": "system", "content": _idea_system_prompt()},
-            {
-                "role": "user",
-                "content": (
-                    f"Prompt version: {IDEA_FINAL_GUIDANCE_PROMPT_VERSION}\n"
-                    f"{_user_content_boundary_instruction()}\n\n"
-                    "The user has already received three progressive creative hints. Provide a final launch point, "
-                    "not another hint. Include a one-sentence summary of the strongest direction, one concrete next "
-                    "action the user can perform immediately, and optionally one very short starter fragment of no "
-                    "more than two sentences. Do not repeat the previous hints word-for-word. Do not create the "
-                    "complete final poem, story, speech, essay, campaign, or project. Do not use Markdown bold or headings.\n\n"
-                    f"{_wrap_user_content('creative_request', request_text)}"
-                    f"{hint_context}"
-                ),
-            },
-        ],
-        temperature=0.7,
     )
     return _clean_display_text(text)
 
@@ -754,59 +598,6 @@ def check_attempt(question, student_answer, correct_answer):
     }
 
 
-def check_idea_attempt(request_text, user_attempt, hints: list[str] | None = None):
-    """Check whether a creative attempt is meaningful enough to proceed."""
-    if not user_attempt or not user_attempt.strip():
-        return {
-            "correct": False,
-            "meaningful_attempt": False,
-            "feedback": "Please share your attempt before continuing.",
-            "next_action": "try_again",
-        }
-
-    hint_context = ""
-    if hints:
-        hint_context = "\n\n" + _wrap_user_content("previous_hints", "\n".join(f"{i + 1}. {hint}" for i, hint in enumerate(hints)))
-
-    result = _call_ai(
-        [
-            {"role": "system", "content": _idea_system_prompt()},
-            {
-                "role": "user",
-                "content": (
-                    f"Prompt version: {IDEA_ATTEMPT_PROMPT_VERSION}\n"
-                    f"{_user_content_boundary_instruction()}\n\n"
-                    "Evaluate whether the user's attempt meaningfully engages with the original creative request. "
-                    "Do not compare it against one preferred idea, answer, final guidance, or style. Creative alternatives "
-                    "are valid, and the user may depart from previous hints. Check relevance to the request, evidence of "
-                    "genuine effort, compliance with explicit constraints, whether it is developed enough for useful "
-                    "feedback, and safety. Mark unsuccessful only if it is empty, unrelated, unsafe, copied instructions, "
-                    "or clearly not a real attempt. Return JSON only in this shape: "
-                    "{\"meaningful_attempt\": true/false, \"feedback\": \"short helpful feedback\", \"next_action\": \"continue/try_again\"}.\n\n"
-                    f"{_wrap_user_content('creative_request', request_text)}\n\n"
-                    f"{_wrap_user_content('creative_attempt', user_attempt)}"
-                    f"{hint_context}"
-                ),
-            },
-        ],
-        temperature=0.2,
-        json_mode=True,
-    )
-
-    if not isinstance(result, dict):
-        raise AIServiceError("The text model returned an invalid creative attempt response.")
-
-    meaningful_attempt = bool(result.get("meaningful_attempt"))
-    return {
-        # Compatibility note:
-        # In Idea mode, "correct" means the attempt is meaningful enough to proceed.
-        "correct": meaningful_attempt,
-        "meaningful_attempt": meaningful_attempt,
-        "feedback": _clean_display_text(result.get("feedback") or "Keep developing the idea and try again."),
-        "next_action": str(result.get("next_action") or ("continue" if meaningful_attempt else "try_again")),
-    }
-
-
 # ---------------------------------------------------------------------------
 # Generate explanations
 # ---------------------------------------------------------------------------
@@ -832,31 +623,339 @@ def generate_explanation(question, correct_answer):
     return _clean_display_text(text)
 
 
-def generate_idea_explanation(request_text: str, user_attempt: str, hints: list[str] | None = None) -> str:
-    """Generate concise feedback on a successful Idea-mode attempt."""
-    hint_context = ""
-    if hints:
-        hint_context = "\n\n" + _wrap_user_content("previous_hints", "\n".join(f"{i + 1}. {hint}" for i, hint in enumerate(hints)))
+# ---------------------------------------------------------------------------
+# Adaptive Idea Mode discovery and development
+# ---------------------------------------------------------------------------
 
-    text = _call_ai(
+def _clean_short_text(value: Any, *, required: bool = True, maximum: int = 600) -> str:
+    text = _clean_display_text(_basic_clean_text(value))
+    if required and not text:
+        raise AIServiceError("Idea response contained an empty required field.")
+    if len(text) > maximum:
+        raise AIServiceError("Idea response contained a field that is too long.")
+    return text
+
+
+def detect_idea_language(text: Any) -> str:
+    """Return a stable language hint for prompts; English is the safe Latin-script default."""
+    value = str(text or "")
+    if re.search(r"[\u4e00-\u9fff]", value):
+        return "zh"
+    if re.search(r"[\u3040-\u30ff]", value):
+        return "ja"
+    if re.search(r"[\uac00-\ud7af]", value):
+        return "ko"
+    if re.search(r"[\u0600-\u06ff]", value):
+        return "ar"
+    if re.search(r"[\u0400-\u04ff]", value):
+        return "ru"
+    return "en"
+
+
+def _ensure_required_language(value: Any, language: str) -> None:
+    """Reject a structured result that visibly contradicts an English input session."""
+    if language != "en":
+        return
+    serialized = json.dumps(value, ensure_ascii=False)
+    if re.search(r"[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af\u0400-\u04ff\u0600-\u06ff]", serialized):
+        raise AIServiceError("Idea response did not use the required English language.")
+
+
+def _validate_idea_context(value: Any) -> dict[str, list[str]]:
+    if not isinstance(value, dict):
+        raise AIServiceError("Idea discovery response must include known_context.")
+
+    cleaned: dict[str, list[str]] = {}
+    for key, raw_values in value.items():
+        if not re.fullmatch(r"[a-z][a-z0-9_]{1,63}", str(key)):
+            continue
+        values = raw_values if isinstance(raw_values, list) else [raw_values]
+        entries = []
+        for item in values:
+            entry = _clean_short_text(item, required=False, maximum=240)
+            if entry and entry not in entries:
+                entries.append(entry)
+        if entries:
+            cleaned[key] = entries[:5]
+    return cleaned
+
+
+def _validate_task_profile(value: Any) -> dict[str, str]:
+    value = value if isinstance(value, dict) else {}
+    task_type = str(value.get("task_type") or "general").strip().lower()
+    if task_type not in IDEA_TASK_TYPES:
+        task_type = "general"
+    return {
+        "task_type": task_type,
+        "requested_deliverable": _clean_short_text(value.get("requested_deliverable") or "the user's requested deliverable", maximum=240),
+        "generation_style": _clean_short_text(value.get("generation_style") or "task-appropriate concept directions", maximum=180),
+        "language": str(value.get("language") or "en"),
+    }
+
+
+def _validate_discovery_questions(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or not 3 <= len(value) <= 5:
+        raise AIServiceError("Idea discovery must return three to five questions.")
+
+    questions = []
+    seen_ids = set()
+    for item in value:
+        if not isinstance(item, dict):
+            raise AIServiceError("Each discovery question must be an object.")
+        question_id = str(item.get("id") or "").strip()
+        if not re.fullmatch(r"[a-z][a-z0-9_]{1,63}", question_id) or question_id in seen_ids:
+            raise AIServiceError("Idea discovery returned invalid or duplicate question IDs.")
+        question_type = str(item.get("type") or "").strip()
+        if question_type not in IDEA_QUESTION_TYPES:
+            raise AIServiceError("Idea discovery returned an unsupported question type.")
+
+        options = item.get("options") or []
+        if question_type == "short_text":
+            options = []
+        elif not isinstance(options, list) or not 2 <= len(options) <= 7:
+            raise AIServiceError("Selectable discovery questions require two to seven options.")
+
+        cleaned_options = []
+        for option in options:
+            option_text = _clean_short_text(option, maximum=100)
+            if option_text not in cleaned_options:
+                cleaned_options.append(option_text)
+        if question_type != "short_text" and len(cleaned_options) < 2:
+            raise AIServiceError("Discovery question options must be distinct.")
+
+        seen_ids.add(question_id)
+        questions.append({
+            "id": question_id,
+            "question": _clean_short_text(item.get("question"), maximum=280),
+            "type": question_type,
+            "options": cleaned_options,
+            "allow_custom_answer": bool(item.get("allow_custom_answer", False)),
+        })
+    return questions
+
+
+def _validate_discovery_plan(value: Any, previous_question_ids: set[str] | None = None) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise AIServiceError("Idea discovery returned an invalid response.")
+    missing = value.get("missing_context") or []
+    if not isinstance(missing, list):
+        raise AIServiceError("Idea discovery returned invalid missing context.")
+    assumptions = value.get("assumptions") or []
+    if not isinstance(assumptions, list):
+        raise AIServiceError("Idea discovery returned invalid assumptions.")
+    ready_to_generate = bool(value.get("ready_to_generate", value.get("can_generate_now", False)))
+    ready_to_generate = ready_to_generate or str(value.get("next_action") or "").lower() == "show_ideas"
+    raw_questions = value.get("questions") or []
+    questions = [] if ready_to_generate and not raw_questions else _validate_discovery_questions(raw_questions)
+    if previous_question_ids and any(question["id"] in previous_question_ids for question in questions):
+        raise AIServiceError("Idea discovery repeated an answered question dimension.")
+    return {
+        "summary": _clean_short_text(value.get("summary") or "We are narrowing your idea options.", maximum=500),
+        "task_profile": _validate_task_profile(value.get("task_profile")),
+        "known_context": _validate_idea_context(value.get("known_context") or {}),
+        "missing_context": [_clean_short_text(item, maximum=100) for item in missing[:6]],
+        "reason": _clean_short_text(value.get("reason") or "These choices will make the ideas more relevant.", maximum=300),
+        "questions": questions,
+        "ready_to_generate": ready_to_generate,
+        "assumptions": [_clean_short_text(item, maximum=180) for item in assumptions[:5]],
+    }
+
+
+def plan_idea_discovery(
+    original_request: str,
+    known_context: dict[str, list[str]],
+    previous_questions: list[dict[str, Any]],
+    round_number: int,
+    task_profile: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Return the next adaptive round of high-impact discovery questions."""
+    context_json = json.dumps(known_context, ensure_ascii=False)
+    asked_json = json.dumps(previous_questions, ensure_ascii=False)
+    previous_question_ids = {
+        question.get("id")
+        for round_data in previous_questions
+        for question in round_data.get("questions", [])
+        if isinstance(question, dict) and question.get("id")
+    }
+    required_language = (task_profile or {}).get("language") or detect_idea_language(original_request)
+    language_name = LANGUAGE_NAMES.get(required_language, "the user's language")
+    def validate(value):
+        _ensure_required_language(value, required_language)
+        return _validate_discovery_plan(value, previous_question_ids)
+
+    result = _call_json_with_repair(
         [
             {"role": "system", "content": _idea_system_prompt()},
             {
                 "role": "user",
                 "content": (
-                    f"Prompt version: {IDEA_EXPLANATION_PROMPT_VERSION}\n"
+                    f"Prompt version: {IDEA_DISCOVERY_PROMPT_VERSION}\n"
                     f"{_user_content_boundary_instruction()}\n\n"
-                    "Give concise feedback on the user's creative attempt. Identify one specific element that works, "
-                    "why it supports the original request, and one focused next improvement. Reference the actual attempt. "
-                    "Do not give generic praise. Do not pretend weak work is excellent. Do not rewrite or complete the "
-                    "entire work. Do not force the attempt to follow one preferred creative direction. Stay concise, "
-                    "encouraging, and in the same language as the user.\n\n"
-                    f"{_wrap_user_content('creative_request', request_text)}\n\n"
-                    f"{_wrap_user_content('creative_attempt', user_attempt)}"
-                    f"{hint_context}"
+                    "Plan discovery round " + str(round_number) + " of at most three. Return exactly three to five "
+                    "short, simple questions that materially narrow the final concepts. Questions must build on "
+                    "the known context, never repeat an answered dimension, and avoid technical detail until it is "
+                    "useful. Ask in the user's language. Each selectable question should include clear options and "
+                    "normally allow a custom answer. Return JSON only with summary, known_context, missing_context, "
+                    "reason, task_profile, ready_to_generate, assumptions, and questions. The original request's "
+                    f"required_language is {language_name}. Write every user-visible string in {language_name}; never translate it into another language. "
+                    "The original request's deliverable is authoritative: never reframe a poem, story, design, name, campaign, or presentation "
+                    "as an app, AI agent, product, or service unless the user explicitly asks for one. Use task_profile "
+                    "with task_type (creative_writing, product_project, design, campaign, naming, presentation, or general), "
+                    "requested_deliverable, and generation_style. Use this exact top-level shape: "
+                    "{\"summary\": \"...\", \"task_profile\": {\"task_type\": \"creative_writing\", \"requested_deliverable\": \"poem\", \"generation_style\": \"poem directions\"}, \"known_context\": {\"theme\": [\"...\"]}, "
+                    "\"missing_context\": [\"...\"], \"reason\": \"...\", \"ready_to_generate\": false, "
+                    "\"assumptions\": [], \"questions\": [{\"id\": \"...\", \"question\": \"...\", "
+                    "\"type\": \"single_select\", \"options\": [\"...\"], \"allow_custom_answer\": true}]}. "
+                    "Set ready_to_generate true when the "
+                    "original request already has enough detail or explicitly asks to generate ideas now; still "
+                    "return valid questions because the application may choose to show them. Assumptions must be "
+                    "short, user-visible statements in the user's language. Question objects must use id, question, type "
+                    "(single_select, multi_select, or short_text), options, and allow_custom_answer.\n\n"
+                    f"{_wrap_user_content('original_request', original_request)}\n\n"
+                    f"{_wrap_user_content('known_context_json', context_json)}\n\n"
+                    f"{_wrap_user_content('task_profile_json', json.dumps(task_profile or {}, ensure_ascii=False))}\n\n"
+                    f"{_wrap_user_content('previous_questions_json', asked_json)}"
                 ),
             },
         ],
-        temperature=0.4,
+        validator=validate,
+        temperature=0.35,
+        prompt_version=IDEA_DISCOVERY_PROMPT_VERSION,
     )
-    return _clean_display_text(text)
+    return result
+
+
+def _validate_generated_ideas(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, list):
+        value = {"ideas": value}
+    if not isinstance(value, dict):
+        raise AIServiceError("Idea generation response must include an ideas list.")
+    raw_ideas = value.get("ideas") or value.get("concepts") or value.get("options")
+    if not isinstance(raw_ideas, list):
+        raise AIServiceError("Idea generation response must include an ideas list.")
+    if not 5 <= len(raw_ideas) <= 10:
+        raise AIServiceError("Idea generation must return five to ten ideas.")
+
+    ideas = []
+    names = set()
+    for item in raw_ideas:
+        if not isinstance(item, dict):
+            raise AIServiceError("Each generated idea must be an object.")
+        name = _clean_short_text(item.get("name") or item.get("title"), maximum=100)
+        if name.lower() in names:
+            raise AIServiceError("Generated idea names must be distinct.")
+        names.add(name.lower())
+        details = item.get("details") or []
+        if not isinstance(details, list) or not 3 <= len(details) <= 5:
+            raise AIServiceError("Each idea needs three to five task-specific details.")
+        difficulty = str(item.get("difficulty") or item.get("technical_difficulty") or "").strip().lower()
+        difficulty = {"easy": "low", "beginner": "low", "moderate": "medium", "advanced": "high"}.get(difficulty, difficulty)
+        if difficulty not in IDEA_DIFFICULTIES:
+            raise AIServiceError("Generated idea has an unsupported difficulty.")
+        ideas.append({
+            "name": name,
+            "concept": _clean_short_text(item.get("concept") or item.get("description"), maximum=360),
+            "why_it_fits": _clean_short_text(item.get("why_it_fits") or item.get("fit_with_user_answers") or item.get("fit"), maximum=300),
+            "distinctive_angle": _clean_short_text(item.get("distinctive_angle") or item.get("differentiator") or item.get("what_makes_it_different"), maximum=280),
+            "details": [{"label": _clean_short_text(detail.get("label"), maximum=80), "value": _clean_short_text(detail.get("value"), maximum=240)} for detail in details if isinstance(detail, dict)],
+            "difficulty": difficulty,
+            "next_step": _clean_short_text(item.get("next_step"), maximum=240),
+            "risk_or_consideration": _clean_short_text(item.get("risk_or_consideration") or item.get("major_risk") or item.get("risk") or item.get("limitation"), required=False, maximum=280) or None,
+        })
+        if len(ideas[-1]["details"]) < 3:
+            raise AIServiceError("Each idea needs valid task-specific details.")
+    return ideas
+
+
+def generate_personalized_ideas(
+    original_request: str, task_profile: dict[str, str], known_context: dict[str, list[str]], assumptions: list[str]
+) -> list[dict[str, Any]]:
+    """Generate a varied shortlist after discovery or an explicit early request."""
+    required_language = task_profile.get("language") or detect_idea_language(original_request)
+    language_name = LANGUAGE_NAMES.get(required_language, "the user's language")
+    def validate(value):
+        _ensure_required_language(value, required_language)
+        return _validate_generated_ideas(value)
+
+    result = _call_json_with_repair(
+        [
+            {"role": "system", "content": _idea_system_prompt()},
+            {
+                "role": "user",
+                "content": (
+                    f"Prompt version: {IDEA_GENERATION_PROMPT_VERSION}\n"
+                    f"{_user_content_boundary_instruction()}\n\n"
+                    "Generate exactly five distinct, concise concept directions that directly serve the requested deliverable. "
+                    "The task profile is authoritative. Never invent an app, AI agent, product, target user, feature list, "
+                    f"or MVP for a non-product task. Write every user-visible string in {language_name}; do not translate it. Use product details only when task_type is product_project. Every idea must "
+                    "include name, concept, why_it_fits, distinctive_angle, difficulty (low, medium, or high), next_step, optional "
+                    "risk_or_consideration, and three to five task-specific details as label/value pairs. For poems, details should "
+                    "cover matters such as theme, voice, imagery, structure, or opening approach. Use the user's language. Return JSON "
+                    "only as {\"ideas\": [{\"name\": \"...\", \"concept\": \"...\", \"why_it_fits\": \"...\", "
+                    "\"distinctive_angle\": \"...\", \"details\": [{\"label\": \"...\", \"value\": \"...\"}], "
+                    "\"difficulty\": \"low|medium|high\", \"next_step\": \"...\", \"risk_or_consideration\": \"...\"}]}.\n\n"
+                    f"{_wrap_user_content('original_request', original_request)}\n\n"
+                    f"{_wrap_user_content('task_profile_json', json.dumps(task_profile, ensure_ascii=False))}\n\n"
+                    f"{_wrap_user_content('known_context_json', json.dumps(known_context, ensure_ascii=False))}\n\n"
+                    f"{_wrap_user_content('assumptions_json', json.dumps(assumptions, ensure_ascii=False))}"
+                ),
+            },
+        ],
+        validator=validate,
+        temperature=0.75,
+        prompt_version=IDEA_GENERATION_PROMPT_VERSION,
+    )
+    return result
+
+
+def _validate_development_brief(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise AIServiceError("Idea development returned an invalid response.")
+    for list_key, minimum, maximum in (("focus_areas", 3, 5), ("next_steps", 3, 5)):
+        if not isinstance(value.get(list_key), list) or not minimum <= len(value[list_key]) <= maximum:
+            raise AIServiceError(f"Idea development requires {minimum} to {maximum} {list_key}.")
+    return {
+        "title": _clean_short_text(value.get("title"), maximum=120),
+        "summary": _clean_short_text(value.get("summary") or value.get("concept_summary"), maximum=500),
+        "recommended_direction": _clean_short_text(value.get("recommended_direction") or value.get("recommended_mvp"), maximum=500),
+        "focus_areas": [_clean_short_text(item, maximum=180) for item in value["focus_areas"]],
+        "next_steps": [_clean_short_text(item, maximum=220) for item in value["next_steps"]],
+        "review_step": _clean_short_text(value.get("review_step") or value.get("validation_experiment"), maximum=360),
+        "considerations": [_clean_short_text(item, maximum=220) for item in (value.get("considerations") or value.get("risks") or [])[:3]],
+    }
+
+
+def generate_idea_development_brief(
+    original_request: str, task_profile: dict[str, str], known_context: dict[str, list[str]], selected_ideas: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Create a one-shot, practical MVP brief for one or two selected concepts."""
+    required_language = task_profile.get("language") or detect_idea_language(original_request)
+    language_name = LANGUAGE_NAMES.get(required_language, "the user's language")
+    def validate(value):
+        _ensure_required_language(value, required_language)
+        return _validate_development_brief(value)
+
+    result = _call_json_with_repair(
+        [
+            {"role": "system", "content": _idea_system_prompt()},
+            {
+                "role": "user",
+                "content": (
+                    f"Prompt version: {IDEA_DEVELOPMENT_PROMPT_VERSION}\n"
+                    f"{_user_content_boundary_instruction()}\n\n"
+                    "Create one task-appropriate plan for the selected concept or blend. Preserve the requested deliverable; "
+                    "never turn a non-product task into an app or MVP. Return JSON only with title, summary, recommended_direction, "
+                    "focus_areas (3-5), next_steps (3-5), review_step, and considerations (up to 3). For writing, provide a writing "
+                    f"plan; for products, provide an MVP plan. Write every user-visible string in {language_name}; do not translate it.\n\n"
+                    f"{_wrap_user_content('original_request', original_request)}\n\n"
+                    f"{_wrap_user_content('task_profile_json', json.dumps(task_profile, ensure_ascii=False))}\n\n"
+                    f"{_wrap_user_content('known_context_json', json.dumps(known_context, ensure_ascii=False))}\n\n"
+                    f"{_wrap_user_content('selected_ideas_json', json.dumps(selected_ideas, ensure_ascii=False))}"
+                ),
+            },
+        ],
+        validator=validate,
+        temperature=0.45,
+        prompt_version=IDEA_DEVELOPMENT_PROMPT_VERSION,
+    )
+    return result

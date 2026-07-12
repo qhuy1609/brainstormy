@@ -274,7 +274,7 @@ export default function QuestionInput({ onSubmit, loading }) {
           ref={textareaRef}
           id="question-text"
           className="question-textarea composer-textarea"
-          placeholder="Ask a question or upload a problem..."
+          placeholder={selectedDisplayMode === 'idea' ? 'Describe what you want to explore or create...' : 'Ask a question or upload a problem...'}
           value={text}
           onChange={(e) => setText(e.target.value)}
           onCompositionStart={() => setIsComposing(true)}
@@ -306,7 +306,7 @@ export default function QuestionInput({ onSubmit, loading }) {
           </div>
 
           <div className="composer-actions-right">
-            <div className="tooltip-wrap">
+            {selectedDisplayMode === 'academic' && <div className="tooltip-wrap">
               <button
                 ref={examButtonRef}
                 type="button"
@@ -325,7 +325,7 @@ export default function QuestionInput({ onSubmit, loading }) {
               >
                 <Icon name="exam" />
               </button>
-            </div>
+            </div>}
 
             <div className="display-mode-selector" ref={modeSelectorRef}>
               <button

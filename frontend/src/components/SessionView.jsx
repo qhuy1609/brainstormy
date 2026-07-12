@@ -4,9 +4,14 @@ import HintCard from './HintCard.jsx'
 import AttemptBox from './AttemptBox.jsx'
 import FeedbackBox from './FeedbackBox.jsx'
 import MathText from './MathText.jsx'
+import IdeaSessionView from './IdeaSessionView.jsx'
 import { fetchSessionState, requestHint, submitAttempt, revealAnswer } from '../api/learningApi.js'
 
 export default function SessionView({ initialSession, onReset, onError }) {
+  if (initialSession.mode === 'idea') {
+    return <IdeaSessionView initialSession={initialSession} onReset={onReset} onError={onError} />
+  }
+
   const [session, setSession] = useState(initialSession)
   const [hintLoading, setHintLoading] = useState(false)
   const [attemptLoading, setAttemptLoading] = useState(false)

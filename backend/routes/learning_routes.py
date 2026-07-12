@@ -13,6 +13,9 @@ from services.session_service import (
     get_next_hint,
     submit_attempt,
     reveal_answer,
+    submit_idea_answers,
+    generate_idea_now,
+    develop_selected_ideas,
     normalize_response_mode,
 )
 
@@ -78,6 +81,52 @@ def fetch_session(session_id):
 def fetch_hint(session_id):
     try:
         result = get_next_hint(session_id)
+        if "error" in result:
+            return jsonify(result), 400
+        return jsonify(result), 200
+    except Exception as e:
+        ai_error = _ai_error_response(e)
+        if ai_error:
+            return ai_error
+        return jsonify({"error": "Internal server error."}), 500
+
+
+@learning_bp.route("/<session_id>/idea/answers", methods=["POST"])
+def submit_discovery_answers(session_id):
+    data = request.get_json(silent=True) or {}
+    try:
+        result = submit_idea_answers(session_id, data.get("answers"))
+        if "error" in result:
+            return jsonify(result), 400
+        return jsonify(result), 200
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        ai_error = _ai_error_response(e)
+        if ai_error:
+            return ai_error
+        return jsonify({"error": "Internal server error."}), 500
+
+
+@learning_bp.route("/<session_id>/idea/generate", methods=["POST"])
+def generate_ideas(session_id):
+    try:
+        result = generate_idea_now(session_id)
+        if "error" in result:
+            return jsonify(result), 400
+        return jsonify(result), 200
+    except Exception as e:
+        ai_error = _ai_error_response(e)
+        if ai_error:
+            return ai_error
+        return jsonify({"error": "Internal server error."}), 500
+
+
+@learning_bp.route("/<session_id>/idea/develop", methods=["POST"])
+def develop_ideas(session_id):
+    data = request.get_json(silent=True) or {}
+    try:
+        result = develop_selected_ideas(session_id, data.get("idea_ids"))
         if "error" in result:
             return jsonify(result), 400
         return jsonify(result), 200
