@@ -13,7 +13,7 @@ ACADEMIC_VALIDATION_PROMPT_VERSION = "academic-validation-v2"
 IDEA_VALIDATION_PROMPT_VERSION = "idea-validation-v2"
 ACADEMIC_HINT_PROMPT_VERSION = "academic-hints-v2"
 ACADEMIC_RESPONSE_TYPE_PROMPT_VERSION = "academic-response-type-v1"
-ACADEMIC_CONCEPTS_PROMPT_VERSION = "academic-concepts-v1"
+ACADEMIC_CONCEPTS_PROMPT_VERSION = "academic-concepts-v2"
 ACADEMIC_DIAGNOSIS_PROMPT_VERSION = "academic-diagnosis-v1"
 ACADEMIC_TARGETED_HINT_PROMPT_VERSION = "academic-targeted-hint-v1"
 ACADEMIC_WORKED_SOLUTION_PROMPT_VERSION = "academic-worked-solution-v1"
@@ -513,27 +513,39 @@ def decompose_question(cleaned_question):
     return cleaned_parts
 
 
+def _normalize_required_concepts(value: Any) -> list[str]:
+    """Validate broad topic labels returned for an academic question."""
+    if not isinstance(value, dict) or not isinstance(value.get("requiredConcepts"), list):
+        raise AIServiceError("Academic concepts must be a list.")
+
+    raw_concepts = value["requiredConcepts"]
+    if not 2 <= len(raw_concepts) <= 4:
+        raise AIServiceError("Academic concepts must contain two to four topics.")
+
+    concepts = []
+    seen = set()
+    for item in raw_concepts:
+        if not isinstance(item, str):
+            raise AIServiceError("Every academic concept must be text.")
+        concept = _clean_display_text(item)
+        if not concept:
+            raise AIServiceError("Academic concepts must not be empty.")
+        if "\n" in concept or len(concept) > 48 or len(concept.split()) > 6:
+            raise AIServiceError("Academic concepts must be short topic labels, not sentences.")
+
+        key = concept.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        concepts.append(concept)
+
+    if len(concepts) < 2:
+        raise AIServiceError("Academic concepts must contain at least two distinct topics.")
+    return concepts
+
+
 def infer_required_concepts(question: str) -> list[str]:
-    """Return a short, subject-neutral list of knowledge areas relevant to a question."""
-    def validate(value: Any) -> list[str]:
-        if not isinstance(value, dict) or not isinstance(value.get("requiredConcepts"), list):
-            raise AIServiceError("Academic concepts must be a list.")
-
-        concepts = []
-        seen = set()
-        for item in value["requiredConcepts"]:
-            if not isinstance(item, str):
-                continue
-            concept = _clean_display_text(item)
-            key = concept.casefold()
-            if not concept or key in seen:
-                continue
-            if len(concept) > 120:
-                raise AIServiceError("Academic concept is too long.")
-            seen.add(key)
-            concepts.append(concept)
-
-        return concepts[:8]
+    """Return broad, subject-neutral prerequisite topics for a question."""
 
     try:
         return _call_json_with_repair(
@@ -544,15 +556,32 @@ def infer_required_concepts(question: str) -> list[str]:
                     "content": (
                         f"Prompt version: {ACADEMIC_CONCEPTS_PROMPT_VERSION}\n"
                         f"{_user_content_boundary_instruction()}\n\n"
-                        "Identify 1-6 concise concepts, skills, methods, rules, or knowledge areas that could help "
-                        "answer this question. Use the question's language. Be domain-agnostic: do not label or infer "
-                        "a school subject, difficulty, correctness, hints, or an answer. Return JSON only in this shape: "
-                        "{\"requiredConcepts\": [\"...\"]}.\n\n"
+                        "Identify 2-4 broad prerequisite topics the learner should understand before answering the "
+                        "question. Each tag must be a reusable noun phrase of at most 6 words and 48 characters. Use "
+                        "the question's language. Choose meaningful topic areas rather than generic school-subject "
+                        "labels such as Mathematics, Science, or Humanities.\n\n"
+                        "Tags orient the learner; they must never outline the solution. Do not return definitions, "
+                        "formulas, constants, calculations, operations, instructions, answer fragments, solution "
+                        "steps, or conditions copied from the question. Do not name a theorem, formula, rule, or method "
+                        "unless that exact named idea already appears in the question. Merge overlapping ideas and "
+                        "prefer the broader transferable topic. For questions asking for causes, effects, examples, "
+                        "or evidence, do not put likely answers in the tags.\n\n"
+                        "Cross-domain examples:\n"
+                        "Physics -> [\"Work and energy\", \"Potential energy\", \"Gravity\"], not [\"Work-energy "
+                        "theorem\", \"Definition of potential energy as stored work\", \"Constant acceleration g\"].\n"
+                        "Mathematics -> [\"Quadratic equations\", \"Algebraic expressions\"], not [\"Factorisation\", "
+                        "\"Zero-product property\", \"Use the quadratic formula\"].\n"
+                        "Programming -> [\"Recursion\", \"Functions\", \"Program flow\"], not implementation steps.\n"
+                        "History -> [\"Industrial Revolution\", \"Social change\", \"Historical evidence\"], not "
+                        "specific effects that answer the question.\n"
+                        "Literary analysis -> [\"Literary analysis\", \"Imagery\", \"Mood and tone\"], not claims "
+                        "about the text.\n\n"
+                        "Return JSON only in this shape: {\"requiredConcepts\": [\"...\"]}.\n\n"
                         f"{_wrap_user_content('academic_question', question)}"
                     ),
                 },
             ],
-            validator=validate,
+            validator=_normalize_required_concepts,
             temperature=0,
             prompt_version=ACADEMIC_CONCEPTS_PROMPT_VERSION,
         )

@@ -64,12 +64,12 @@ class ResponseModeTests(unittest.TestCase):
              patch("services.session_service.clean_question", return_value="Factorise x^2 + 5x + 6"), \
              patch("services.session_service.decompose_question", return_value=["Factorise x^2 + 5x + 6"]), \
              patch("services.session_service.infer_academic_response_type", return_value={"kind": "calculation", "label": "Your calculation", "placeholder": "Show your steps", "guidance": "Show the formula"}) as response_type, \
-             patch("services.session_service.infer_required_concepts", return_value=["Factorisation", "Zero-product property"]), \
+             patch("services.session_service.infer_required_concepts", return_value=["Quadratic equations", "Algebraic expressions"]), \
              patch("services.session_service.generate_final_answer", return_value="(x+2)(x+3)"):
             result = create_session("Factorise x^2 + 5x + 6", "text", None, False, "academic")
         self.assertEqual(result["mode"], "academic")
         self.assertEqual(result["response_type"]["kind"], "calculation")
-        self.assertEqual(result["requiredConcepts"], ["Factorisation", "Zero-product property"])
+        self.assertEqual(result["requiredConcepts"], ["Quadratic equations", "Algebraic expressions"])
         response_type.assert_called_once()
 
     def test_broad_idea_request_starts_discovery_without_hints(self):
