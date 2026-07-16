@@ -71,6 +71,13 @@ Frontend runs on:
 http://localhost:5173
 ```
 
+The frontend exposes two browser routes:
+
+- `/` is the brainstormy marketing landing page.
+- `/app` is the interactive Academic and Idea mode workspace.
+
+Production hosting must use an SPA fallback that serves `frontend/dist/index.html` for direct requests to `/app` and other client-side routes. Refreshing `/app` intentionally starts a fresh composer because sessions are currently held in memory.
+
 Open that URL in your browser and try a question such as:
 
 ```text

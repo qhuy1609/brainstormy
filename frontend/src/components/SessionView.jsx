@@ -152,7 +152,7 @@ export default function SessionView({ initialSession, onReset, onError }) {
       />
 
       <button className="btn btn-secondary btn-hint" onClick={handleHint} disabled={hintLoading || isCompleted}>
-        {hintLoading ? <span className="spinner" /> : (feedback ? 'Give me a targeted hint' : "I'm stuck — give me a hint")}
+        {hintLoading ? <span className="spinner" /> : (feedback ? 'Give me a targeted hint' : "I'm stuck - give me a hint")}
       </button>
 
       {feedback && <FeedbackBox feedback={feedback} />}
