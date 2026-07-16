@@ -47,7 +47,7 @@ export default function App() {
   return (
     <div className="app">
       <header className="app-header">
-        <h1 className="app-title">testapp</h1>
+        <h1 className="app-title">brainstormy</h1>
         <p className="app-subtitle">An AI tutor that protects your thinking, not replaces it.</p>
       </header>
 

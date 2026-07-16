@@ -1,8 +1,8 @@
-# BrainGuard
+# brainstormy
 
 **An AI tutor that protects your thinking, not replaces it.**
 
-BrainGuard accepts a typed homework question, an uploaded image, or both. It validates that the request is study-related, splits multi-part questions when needed, gives progressive hints, checks student attempts, and reveals the final answer only when allowed.
+brainstormy accepts a typed homework question, an uploaded image, or both. It validates that the request is study-related, splits multi-part questions when needed, gives progressive hints, checks student attempts, and reveals the final answer only when allowed.
 
 ## What changed in this build
 
@@ -119,7 +119,7 @@ This is why AI responses containing Markdown or LaTeX, such as `**work**` or `$E
 ## Project structure
 
 ```text
-BrainGuard-real-api/
+brainstormy/
   backend/
     ai/
       openrouter.py

@@ -1,1 +1,1 @@
-"""AI provider integrations for BrainGuard."""
+"""AI provider integrations for brainstormy."""
