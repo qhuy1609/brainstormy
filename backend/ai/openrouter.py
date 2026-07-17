@@ -30,6 +30,10 @@ class AIEmptyResponseError(AIServiceError):
     """Raised when OpenRouter returns no assistant content."""
 
 
+class AIStructuredResponseError(AIServiceError):
+    """Raised when a model response cannot satisfy a required structured schema."""
+
+
 def require_env(name: str) -> str:
     value = os.getenv(name, "").strip()
     if not value:

@@ -3,20 +3,19 @@ import logging
 import re
 from typing import Any, Callable
 
-from ai.image_model import extract_question_from_image
-from ai.openrouter import AIServiceError
+from ai.image_input import image_file_to_content
+from ai.openrouter import AIServiceError, AIStructuredResponseError, AIUnsupportedImageError
 from ai.text_model import call_text_model
 
 logger = logging.getLogger(__name__)
 
-ACADEMIC_VALIDATION_PROMPT_VERSION = "academic-validation-v2"
+ACADEMIC_VALIDATION_PROMPT_VERSION = "academic-validation-v3"
 IDEA_VALIDATION_PROMPT_VERSION = "idea-validation-v2"
 ACADEMIC_HINT_PROMPT_VERSION = "academic-hints-v2"
-ACADEMIC_RESPONSE_TYPE_PROMPT_VERSION = "academic-response-type-v1"
 ACADEMIC_CONCEPTS_PROMPT_VERSION = "academic-concepts-v2"
-ACADEMIC_DIAGNOSIS_PROMPT_VERSION = "academic-diagnosis-v1"
+ACADEMIC_DIAGNOSIS_PROMPT_VERSION = "academic-diagnosis-v2"
 ACADEMIC_TARGETED_HINT_PROMPT_VERSION = "academic-targeted-hint-v1"
-ACADEMIC_WORKED_SOLUTION_PROMPT_VERSION = "academic-worked-solution-v1"
+ACADEMIC_WORKED_SOLUTION_PROMPT_VERSION = "academic-worked-solution-v3"
 IDEA_DISCOVERY_PROMPT_VERSION = "idea-discovery-v1"
 IDEA_GENERATION_PROMPT_VERSION = "idea-generation-v1"
 IDEA_DEVELOPMENT_PROMPT_VERSION = "idea-development-v1"
@@ -25,13 +24,11 @@ RESPONSE_MODES = {"academic", "idea"}
 IDEA_VALIDATION_STATUSES = {"valid", "needs_clarification", "invalid"}
 IDEA_REQUEST_TYPES = {"poetry", "story", "project", "naming", "design", "campaign", "presentation", "other", "unknown"}
 MAX_INPUT_CHARS = 12000
-MIN_HINT_CHARS = 12
-MAX_HINT_CHARS = 1600
-ACADEMIC_HINT_STAGES = ["concept", "method", "near_solution"]
 IDEA_TASK_TYPES = {"creative_writing", "product_project", "design", "campaign", "naming", "presentation", "general"}
 IDEA_QUESTION_TYPES = {"single_select", "multi_select", "short_text"}
 IDEA_DIFFICULTIES = {"low", "medium", "high"}
-ACADEMIC_DIAGNOSIS_STATUSES = {"correct", "mostly_correct", "partially_correct", "misconception", "calculation_error", "incomplete", "insufficient_work", "off_topic"}
+ACADEMIC_DIAGNOSIS_STATUSES = {"correct", "mostly_correct", "misconception", "calculation_error", "incomplete"}
+ACADEMIC_NEXT_ACTIONS = {"hint", "solution", "revise"}
 LANGUAGE_NAMES = {
     "en": "English",
     "zh": "Chinese",
@@ -126,6 +123,182 @@ def _clean_display_text(text: Any) -> str:
     return cleaned.strip()
 
 
+def _normalize_cleaned_question_math(text: Any) -> str:
+    """Keep question prose plain while normalizing common mathematical notation."""
+    cleaned = _clean_display_text(_basic_clean_text(text))
+
+    def unwrap_narrative(match: re.Match) -> str:
+        content = match.group(1).strip()
+        prose_words = re.findall(r"[A-Za-z]{2,}", content)
+        return content if len(prose_words) >= 8 else match.group(0)
+
+    cleaned = re.sub(r"\$\$([\s\S]*?)\$\$", unwrap_narrative, cleaned)
+    cleaned = re.sub(r"(?<!\$)\$(?!\$)([^$]+?)\$(?!\$)", unwrap_narrative, cleaned)
+
+    math_tokens = re.split(r"(\$\$[\s\S]*?\$\$|(?<!\$)\$(?!\$)[^$]+?\$(?!\$))", cleaned)
+    scientific_pattern = re.compile(r"(?<![\w\\])(\d+(?:\.\d+)?)\s*[xX×]\s*10\s*\^\s*(-?\d+)")
+    unit_symbol = (
+        r"(?:kilomet(?:er|re)s?|centimet(?:er|re)s?|millimet(?:er|re)s?|met(?:er|re)s?|"
+        r"kilograms?|milligrams?|grams?|seconds?|minutes?|hours?|"
+        r"km|cm|mm|nm|m|kg|mg|g|ms|s|min|hr|h|K|°C|°F|kN|N|kJ|J|kW|W|"
+        r"MPa|kPa|Pa|mL|L|mol|Hz|kHz|MHz|GHz|V|mV|A|mA|C|Ω|ohm|µm|μm)"
+    )
+    unit_piece = rf"{unit_symbol}(?:\s*\^\s*-?\d+)?"
+    quantity_pattern = re.compile(
+        rf"(?<![\w\\])([-+]?\d+(?:,\d{{3}})*(?:\.\d+)?)\s+({unit_piece}(?:\s*(?:/|\s)\s*{unit_piece})?)(?![A-Za-z])"
+    )
+    formula_pattern = re.compile(
+        r"(?<![\w$])([A-Za-z][A-Za-z0-9_]*(?:\^-?\d+)?"
+        r"(?:\s*[+\-*/]\s*(?:[A-Za-z][A-Za-z0-9_]*(?:\^-?\d+)?|\d+(?:\.\d+)?(?:\^-?\d+)?))*"
+        r"\s*=\s*(?:[A-Za-z][A-Za-z0-9_]*(?:\^-?\d+)?|\d+(?:\.\d+)?(?:\^-?\d+)?)"
+        r"(?:\s*[+\-*/]\s*(?:[A-Za-z][A-Za-z0-9_]*(?:\^-?\d+)?|\d+(?:\.\d+)?(?:\^-?\d+)?))*)"
+        r"(?=\s|[,.;:!?]|$)"
+    )
+    simple_exponent_pattern = re.compile(r"(?<![\w$])([A-Za-z0-9]+)\^\s*(-?\d+)(?![\w$])")
+
+    def format_units(unit_expression: str) -> str:
+        expression = re.sub(r"\s*/\s*", "/", unit_expression.strip())
+
+        def format_unit(match: re.Match) -> str:
+            symbol = match.group(1)
+            exponent = match.group(2)
+            rendered = f"\\mathrm{{{symbol}}}"
+            return f"{rendered}^{{{exponent}}}" if exponent is not None else rendered
+
+        expression = re.sub(r"([A-Za-zµμ°Ω]+)(?:\s*\^\s*(-?\d+))?", format_unit, expression)
+        return re.sub(r"(?<=\})\s+(?=\\mathrm)", r"\\,", expression)
+
+    def format_quantity(match: re.Match) -> str:
+        return f"{match.group(1)}\\,{format_units(match.group(2))}"
+
+    def normalize_math_content(content: str) -> str:
+        def normalize_roman_units(match: re.Match) -> str:
+            units = match.group(1).strip()
+            if re.fullmatch(r"[A-Za-zµμ°Ω]+(?:\s*\^\s*-?\d+)?(?:\s*/\s*[A-Za-zµμ°Ω]+(?:\s*\^\s*-?\d+)?)?", units):
+                return format_units(units)
+            return f"\\mathrm{{{units}}}"
+
+        content = re.sub(r"\\(?:text|mathrm)\{\s*([^{}]+?)\s*\}", normalize_roman_units, content)
+        content = scientific_pattern.sub(lambda match: f"{match.group(1)} \\times 10^{{{match.group(2)}}}", content)
+        content = quantity_pattern.sub(format_quantity, content)
+        return simple_exponent_pattern.sub(lambda match: f"{match.group(1)}^{{{match.group(2)}}}", content)
+
+    normalized = []
+    for token in math_tokens:
+        if not token:
+            continue
+        if token.startswith("$$") and token.endswith("$$"):
+            normalized.append(f"$${normalize_math_content(token[2:-2])}$$")
+            continue
+        if token.startswith("$") and token.endswith("$"):
+            normalized.append(f"${normalize_math_content(token[1:-1])}$")
+            continue
+
+        token = scientific_pattern.sub(
+            lambda match: f"${match.group(1)} \\times 10^{{{match.group(2)}}}$",
+            token,
+        )
+        token = quantity_pattern.sub(lambda match: f"${format_quantity(match)}$", token)
+        token = formula_pattern.sub(
+            lambda match: f"${normalize_math_content(match.group(1))}$",
+            token,
+        )
+        token = simple_exponent_pattern.sub(
+            lambda match: f"${match.group(1)}^{{{match.group(2)}}}$",
+            token,
+        )
+        normalized.append(token)
+
+    return "".join(normalized).strip()
+
+
+_SUPERSCRIPT_TRANSLATION = str.maketrans("0123456789+-=()n", "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ⁿ")
+_SUBSCRIPT_TRANSLATION = str.maketrans("0123456789+-=()", "₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎")
+
+
+def _latex_numeric_answer_to_unicode(value: str) -> str:
+    """Convert common LaTeX quantity notation into renderer-independent Unicode."""
+    converted = value.strip()
+    converted = re.sub(r"^\$\$(.*?)\$\$$", r"\1", converted, flags=re.DOTALL)
+    converted = re.sub(r"^\$(.*?)\$$", r"\1", converted, flags=re.DOTALL)
+    converted = re.sub(r"\\(?:left|right)\b", "", converted)
+    converted = re.sub(r"\\(?:[,;:!]|quad\b|qquad\b)", " ", converted)
+    converted = re.sub(r"\\(?:mathrm|text|operatorname)\{([^{}]*)\}", r"\1", converted)
+    converted = converted.replace(r"\times", "×").replace(r"\cdot", "·")
+    converted = re.sub(r"^(?:\\approx\b|≈|~)\s*", "", converted)
+
+    def superscript(match: re.Match) -> str:
+        exponent = match.group(1).replace(" ", "")
+        translated = exponent.translate(_SUPERSCRIPT_TRANSLATION)
+        return translated if len(translated) == len(exponent) else match.group(0)
+
+    def subscript(match: re.Match) -> str:
+        index = match.group(1).replace(" ", "")
+        translated = index.translate(_SUBSCRIPT_TRANSLATION)
+        return translated if len(translated) == len(index) else match.group(0)
+
+    converted = re.sub(r"\^\{([^{}]+)\}", superscript, converted)
+    converted = re.sub(r"\^\s*([+-]?\d+)", superscript, converted)
+    converted = re.sub(r"_\{([^{}]+)\}", subscript, converted)
+    converted = re.sub(r"_\s*([+-]?\d+)", subscript, converted)
+    converted = re.sub(r"\s*/\s*", "/", converted)
+    converted = re.sub(r"\s*([·×])\s*", r" \1 ", converted)
+    return re.sub(r"\s+", " ", converted).strip()
+
+
+def _is_numeric_final_answer(value: str) -> bool:
+    """Return whether value is just a number/scientific value and optional units."""
+    number = r"[-+]?(?:\d+(?:,\d{3})*(?:\.\d+)?|\.\d+)"
+    scientific = rf"(?:\s*×\s*10[⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻]+)?"
+    unit_atom = r"[A-Za-zµμΩ°%]+[₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ⁿ]*"
+    units = rf"(?:\s+{unit_atom}(?:(?:\s*(?:/|·)\s*|\s+){unit_atom})*)?"
+    return bool(re.fullmatch(rf"{number}{scientific}{units}", value.strip()))
+
+
+def _normalize_final_answer(value: Any) -> str:
+    """Normalize quantities to Unicode while retaining symbolic LaTeX and prose."""
+    raw_answer = _clean_display_text(_basic_clean_text(value))
+    if not raw_answer:
+        return ""
+
+    raw_answer = re.sub(
+        r"(?i)^\s*(?:final\s+answer|answer)\s*(?::|is\b)\s*",
+        "",
+        raw_answer,
+    ).strip()
+    unicode_candidate = _latex_numeric_answer_to_unicode(raw_answer)
+
+    # Models sometimes include a variable assignment despite being asked for only
+    # the numeric value and unit. Remove it only when the right side is a quantity.
+    assignment = re.fullmatch(r"[^=≈]+\s*(?:=|≈)\s*(.+)", unicode_candidate)
+    if assignment and _is_numeric_final_answer(assignment.group(1)):
+        unicode_candidate = assignment.group(1).strip()
+
+    if _is_numeric_final_answer(unicode_candidate):
+        if re.search(r"[$\\^]", unicode_candidate):
+            raise AIServiceError("Numeric final answer still contains LaTeX notation.")
+        return unicode_candidate
+
+    inner = raw_answer
+    if inner.startswith("$$") and inner.endswith("$$"):
+        inner = inner[2:-2].strip()
+    elif inner.startswith("$") and inner.endswith("$"):
+        inner = inner[1:-1].strip()
+
+    looks_symbolic = bool(
+        re.search(r"\\(?:frac|sqrt|pm|sum|int|lim|sin|cos|tan)\b", inner)
+        or re.search(r"[A-Za-z][A-Za-z0-9_]*\s*(?:=|≈)|(?:=|≈)\s*[A-Za-z]", inner)
+    )
+    if looks_symbolic:
+        return f"${inner}$"
+
+    # A number-like response that failed quantity conversion should be repaired,
+    # not displayed with raw LaTeX or explanatory prose attached.
+    if re.search(r"\d", raw_answer):
+        raise AIServiceError("Numeric final answer is not valid plain Unicode text.")
+    return raw_answer
+
+
 def _call_ai(messages: list[dict[str, Any]], temperature: float = 0.2, json_mode: bool = False) -> Any:
     """Call the configured OpenRouter text model."""
     content = call_text_model(messages, temperature=temperature, json_mode=json_mode)
@@ -133,7 +306,7 @@ def _call_ai(messages: list[dict[str, Any]], temperature: float = 0.2, json_mode
         try:
             return _extract_json(content)
         except json.JSONDecodeError as exc:
-            raise AIServiceError("The text model returned an invalid structured response.") from exc
+            raise AIStructuredResponseError("The text model returned malformed JSON.") from exc
 
     return content.strip()
 
@@ -149,9 +322,16 @@ def _call_json_with_repair(
     logger.info("Calling text model with prompt_version=%s.", prompt_version)
     first_error = None
     try:
-        return validator(_call_ai(messages, temperature=temperature, json_mode=True))
-    except (AIServiceError, ValueError, TypeError) as exc:
+        first_value = _call_ai(messages, temperature=temperature, json_mode=True)
+    except AIUnsupportedImageError:
+        raise
+    except AIStructuredResponseError as exc:
         first_error = exc
+    else:
+        try:
+            return validator(first_value)
+        except (AIServiceError, ValueError, TypeError) as exc:
+            first_error = exc
 
     repair_messages = [
         {"role": "system", "content": messages[0]["content"]},
@@ -167,10 +347,19 @@ def _call_json_with_repair(
     ]
 
     try:
-        return validator(_call_ai(repair_messages, temperature=0, json_mode=True))
-    except (AIServiceError, ValueError, TypeError) as exc:
-        logger.warning("Structured response remained invalid after repair for prompt_version=%s: %s", prompt_version, exc)
-        raise AIServiceError("The text model returned an invalid structured response. Please try again.") from exc
+        repaired_value = _call_ai(repair_messages, temperature=0, json_mode=True)
+    except AIUnsupportedImageError:
+        raise
+    except AIStructuredResponseError as exc:
+        final_error = exc
+    else:
+        try:
+            return validator(repaired_value)
+        except (AIServiceError, ValueError, TypeError) as exc:
+            final_error = exc
+
+    logger.warning("Structured response remained invalid after repair for prompt_version=%s: %s", prompt_version, final_error)
+    raise AIStructuredResponseError("The AI response could not match the required schema.") from final_error
 
 
 def _validate_mode(mode: str) -> str:
@@ -229,18 +418,101 @@ def _deterministic_validation(input_text: Any, mode: str) -> dict[str, Any] | No
     return None
 
 
-def _validation_from_result(result: Any, default_reason: str) -> dict[str, Any]:
+def _academic_validation_from_result(result: Any) -> dict[str, Any]:
     if not isinstance(result, dict):
         raise AIServiceError("The text model returned an invalid validation response.")
 
+    def boolean_value(key: str, default: bool = False) -> bool:
+        value = result.get(key, default)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str) and value.strip().lower() in {"true", "false"}:
+            return value.strip().lower() == "true"
+        raise AIServiceError(f"Academic validation returned an invalid {key} value.")
+
+    valid = boolean_value("valid")
+    is_multi_part = boolean_value("is_multi_part")
+    needs_clarification = boolean_value("needs_clarification")
+    cleaned_question = _normalize_cleaned_question_math(
+        result.get("cleaned_question") or result.get("extracted_text") or result.get("question")
+    )
+    if is_multi_part:
+        valid = False
+        reason_code = "multi_part_not_supported"
+        message = "Multi-part questions are not supported yet. Please submit one question at a time."
+    else:
+        reason_code = str(result.get("reason_code") or ("valid_academic_request" if valid else "invalid_academic_request"))
+        message = _clean_display_text(result.get("message") or ("Question accepted." if valid else "Please provide a valid academic question."))
+
+    if valid and not cleaned_question:
+        raise AIServiceError("Academic validation returned an empty cleaned question.")
+    if len(cleaned_question) > MAX_INPUT_CHARS:
+        raise AIServiceError("Academic validation returned a question that is too long.")
+
     return {
-        "valid": bool(result.get("valid")),
-        "status": "valid" if bool(result.get("valid")) else "invalid",
-        "reason_code": str(result.get("reason_code") or default_reason),
-        "message": str(result.get("message") or "OK"),
-        "clarification_question": result.get("clarification_question"),
-        "request_type": str(result.get("request_type") or ""),
-        "needs_clarification": bool(result.get("needs_clarification", False)),
+        "valid": valid,
+        "status": "valid" if valid else "invalid",
+        "reason_code": reason_code,
+        "message": message,
+        "request_type": str(result.get("request_type") or "academic"),
+        "needs_clarification": needs_clarification,
+        "cleaned_question": cleaned_question,
+        "is_multi_part": is_multi_part,
+    }
+
+
+def _has_obvious_multiple_parts(text: str) -> bool:
+    """Conservative recovery check used only when structured validation fails twice."""
+    markers = re.findall(
+        r"(?im)^\s*(?:\([a-z]\)|[a-z]\)|\d+[.)]|part\s+[a-z0-9]+\s*[:.)])\s+",
+        text,
+    )
+    return len(markers) >= 2
+
+
+def _academic_validation_fallback(text: str, image_file: Any | None) -> dict[str, Any]:
+    """Recover from repeated schema failures without exposing them to the user."""
+    cleaned_question = _basic_clean_text(text)
+    if image_file is not None:
+        transcript = _call_ai(
+            [
+                {"role": "system", "content": _academic_system_prompt()},
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                "Transcribe this academic question faithfully as plain text. Include choices, equations, "
+                                "diagram or table details, and visible handwriting. Do not solve, summarize, or add commentary."
+                            ),
+                        },
+                        image_file_to_content(image_file),
+                    ],
+                },
+            ],
+            temperature=0,
+        )
+        cleaned_question = _normalize_cleaned_question_math(transcript)
+        if text:
+            cleaned_question = _basic_clean_text(f"{cleaned_question}\n\nUser context: {text}")
+
+    cleaned_question = _normalize_cleaned_question_math(cleaned_question)
+
+    is_multi_part = _has_obvious_multiple_parts(cleaned_question)
+    return {
+        "valid": bool(cleaned_question) and not is_multi_part,
+        "status": "valid" if cleaned_question and not is_multi_part else "invalid",
+        "reason_code": "multi_part_not_supported" if is_multi_part else "validation_recovered",
+        "message": (
+            "Multi-part questions are not supported yet. Please submit one question at a time."
+            if is_multi_part
+            else "Question accepted."
+        ),
+        "request_type": "academic",
+        "needs_clarification": False,
+        "cleaned_question": cleaned_question,
+        "is_multi_part": is_multi_part,
     }
 
 
@@ -283,52 +555,6 @@ def _looks_like_meaningless_noise(text: str) -> bool:
     return False
 
 
-def _validate_hint_objects(result: Any, expected_stages: list[str]) -> list[dict[str, str]]:
-    if not isinstance(result, dict):
-        raise AIServiceError("Hint response must be a JSON object.")
-
-    hints = result.get("hints")
-    if not isinstance(hints, list):
-        raise AIServiceError("Hint response must include a hints list.")
-    if len(hints) != 3:
-        raise AIServiceError("AI did not return exactly three hints.")
-
-    validated = []
-    seen_stages = set()
-    for index, item in enumerate(hints):
-        if not isinstance(item, dict):
-            raise AIServiceError("Each hint must be a structured object.")
-
-        stage = str(item.get("stage") or "").strip()
-        content = _clean_display_text(item.get("content"))
-        if stage != expected_stages[index]:
-            raise AIServiceError("Hint stages are missing or out of order.")
-        if stage in seen_stages:
-            raise AIServiceError("Hint stages must not be duplicated.")
-        if not content:
-            raise AIServiceError("AI returned an empty hint.")
-        if len(content) < MIN_HINT_CHARS:
-            raise AIServiceError("AI returned a trivially short hint.")
-        if len(content) > MAX_HINT_CHARS:
-            raise AIServiceError("AI returned a hint that is too long.")
-
-        seen_stages.add(stage)
-        validated.append({"stage": stage, "content": content})
-
-    if seen_stages != set(expected_stages):
-        raise AIServiceError("Hint stages do not match the required schema.")
-    return validated
-
-
-def _hint_contents(result: Any, expected_stages: list[str]) -> list[str]:
-    return [item["content"] for item in _validate_hint_objects(result, expected_stages)]
-
-
-def _as_json_schema_text(stage_names: list[str]) -> str:
-    examples = ", ".join(f'{{"stage": "{stage}", "content": "..."}}' for stage in stage_names)
-    return f'{{"hints": [{examples}]}}'
-
-
 # ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
@@ -343,29 +569,71 @@ def validate_input(input_text, mode="academic"):
     if mode == "idea":
         return validate_idea_input(input_text)
 
-    result = _call_json_with_repair(
-        [
-            {"role": "system", "content": _academic_system_prompt()},
-            {
-                "role": "user",
-                "content": (
-                    f"Prompt version: {ACADEMIC_VALIDATION_PROMPT_VERSION}\n"
-                    f"{_user_content_boundary_instruction()}\n\n"
-                    "Decide whether this can reasonably be handled as a study question, homework, "
-                    "problem solving, concept explanation, academic writing support, revision, or "
-                    "learning support. Do not reject informal wording, OCR noise, or incomplete grammar "
-                    "when the academic intention is still clear. Return JSON only in this shape: "
-                    "{\"valid\": true/false, \"reason_code\": \"...\", \"message\": \"short user-facing reason\", "
-                    "\"request_type\": \"...\", \"needs_clarification\": true/false}.\n\n"
-                    f"{_wrap_user_content('academic_question', input_text)}"
-                ),
-            },
-        ],
-        validator=lambda value: _validation_from_result(value, "valid_academic_request"),
-        prompt_version=ACADEMIC_VALIDATION_PROMPT_VERSION,
-    )
+    return validate_academic_request(text=input_text)
 
-    return result
+
+def validate_academic_request(text: str = "", image_file: Any | None = None) -> dict[str, Any]:
+    """Extract, validate, normalize, and reject multi-part Academic input in one model call."""
+    cleaned_text = _basic_clean_text(text)
+    if len(cleaned_text) > MAX_INPUT_CHARS:
+        return {
+            "valid": False,
+            "status": "invalid",
+            "reason_code": "too_long",
+            "message": "Input is too long.",
+            "request_type": "academic",
+            "needs_clarification": False,
+            "cleaned_question": "",
+            "is_multi_part": False,
+        }
+    if image_file is None:
+        deterministic = _deterministic_validation(cleaned_text, "academic")
+        if deterministic:
+            return {**deterministic, "cleaned_question": "", "is_multi_part": False}
+
+    prompt = (
+        f"Prompt version: {ACADEMIC_VALIDATION_PROMPT_VERSION}\n"
+        f"{_user_content_boundary_instruction()}\n\n"
+        "The input may be typed text or an uploaded image of an academic question. In one pass:\n"
+        "1. For an image, faithfully transcribe the full question, answer choices, numbers, equations, labels, "
+        "diagram or table information, and visible handwritten work. Flag unreadable content instead of guessing. "
+        "For typed text, only fix clearly corrupted formatting. Never solve, summarize, rephrase, or omit constraints.\n"
+        "When producing cleaned_question, leave all prose as plain text and wrap only genuine mathematical content. "
+        "Use $...$ for inline variables, formulas, scientific notation, or quantities requiring superscripts or subscripts, "
+        "and $$...$$ only for standalone equations that belong on their own line. Never wrap a sentence or the full question "
+        "in one math block. Wrap every number-plus-unit quantity, including ordinary quantities: write 3400 km as "
+        "$3400\\,\\mathrm{km}$. Convert unit exponents to proper LaTeX: write 3.9 g/cm^-3 as "
+        "$3.9\\,\\mathrm{g}/\\mathrm{cm}^{-3}$, and never leave a literal caret in a unit. Convert "
+        "6.67 x 10^-11 to $6.67 \\times 10^{-11}$.\n"
+        "2. Decide whether it is a legitimate study, homework, explanation, writing, revision, or problem-solving request. "
+        "Tolerate informal wording, OCR noise, and incomplete grammar.\n"
+        "3. Detect genuinely distinct multiple questions such as labelled (a)/(b), numbered question parts, or Part A/Part B. "
+        "Do not treat a single reference such as 'solve for (a)' as multi-part. If it is multi-part, set valid to false, "
+        "is_multi_part to true, reason_code to multi_part_not_supported, and ask for one question at a time.\n\n"
+        "Return JSON only with exactly these keys: valid, reason_code, message, request_type, needs_clarification, "
+        "cleaned_question, is_multi_part.\n\n"
+        f"{_wrap_user_content('typed_context', cleaned_text)}"
+    )
+    user_content: Any = prompt
+    if image_file is not None:
+        user_content = [
+            {"type": "text", "text": prompt},
+            image_file_to_content(image_file),
+        ]
+
+    try:
+        return _call_json_with_repair(
+            [
+                {"role": "system", "content": _academic_system_prompt()},
+                {"role": "user", "content": user_content},
+            ],
+            validator=_academic_validation_from_result,
+            temperature=0,
+            prompt_version=ACADEMIC_VALIDATION_PROMPT_VERSION,
+        )
+    except AIStructuredResponseError:
+        logger.warning("Academic validation used its safe fallback after repeated schema failures.")
+        return _academic_validation_fallback(cleaned_text, image_file)
 
 
 def validate_idea_input(input_text):
@@ -403,45 +671,33 @@ def validate_idea_input(input_text):
 
 
 # ---------------------------------------------------------------------------
-# Image text extraction
+# Idea image extraction
 # ---------------------------------------------------------------------------
 
-def extract_text_from_image(image_file):
-    """Extract structured text from an uploaded image using the image model."""
-    text = extract_question_from_image(image_file)
-    return _clean_display_text(_basic_clean_text(text))
-
-
-# ---------------------------------------------------------------------------
-# Clean input
-# ---------------------------------------------------------------------------
-
-def clean_question(raw_text, *, force_llm_cleanup: bool = False):
-    """Normalize a question while avoiding unnecessary LLM cleanup for ordinary typed input."""
-    cleaned = _basic_clean_text(raw_text)
-    if not cleaned:
-        return ""
-    if not force_llm_cleanup:
-        return cleaned
-
+def extract_idea_context_from_image(image_file):
+    """Extract creative context from an image using the unified text model."""
     text = _call_ai(
         [
-            {"role": "system", "content": _academic_system_prompt()},
+            {"role": "system", "content": _idea_system_prompt()},
             {
                 "role": "user",
-                "content": (
-                    f"{_user_content_boundary_instruction()}\n\n"
-                    "Clean this student question only where formatting is clearly corrupted. Preserve all "
-                    "math, wording, and meaning. Do not solve it. Return only the cleaned question text. "
-                    "Do not use Markdown bold, headings, or bullet points. Use inline LaTeX math with "
-                    "single dollar signs when needed.\n\n"
-                    f"{_wrap_user_content('academic_question', cleaned)}"
-                ),
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "Read this uploaded image and extract the useful creative context faithfully. Include visible "
+                            "text, labels, layout, subjects, style, colors, and constraints that could affect brainstorming. "
+                            "Flag ambiguous or unreadable details instead of inventing them. Do not generate ideas or fulfill "
+                            "the request. Return only the extracted context as concise plain text."
+                        ),
+                    },
+                    image_file_to_content(image_file),
+                ],
             },
         ],
         temperature=0,
     )
-    return _clean_display_text(text)
+    return _clean_display_text(_basic_clean_text(text))
 
 
 def clean_idea_request(raw_text, *, force_llm_cleanup: bool = False):
@@ -470,47 +726,6 @@ def clean_idea_request(raw_text, *, force_llm_cleanup: bool = False):
         temperature=0,
     )
     return _clean_display_text(text)
-
-
-# ---------------------------------------------------------------------------
-# Decompose question into sub-questions
-# ---------------------------------------------------------------------------
-
-def decompose_question(cleaned_question):
-    """Split only explicitly labelled multi-part questions into ordered sub-questions."""
-    marker_pattern = re.compile(r"(?im)^\s*(?:\([a-z]\)|[a-z]\)|\d+[.)]|part\s+[a-z0-9]+\s*[:.)])\s+")
-    markers = marker_pattern.findall(cleaned_question)
-    if len(markers) < 2 or len(markers) > 6:
-        return [cleaned_question]
-
-    result = _call_ai(
-        [
-            {"role": "system", "content": _academic_system_prompt()},
-            {
-                "role": "user",
-                "content": (
-                    f"{_user_content_boundary_instruction()}\n\n"
-                    "The question contains explicit part markers. Split only at those existing markers; do not turn "
-                    "reasoning steps, definitions, or supporting calculations into extra parts. Return exactly the "
-                    "same number of non-empty parts as the visible markers, in their original order. "
-                    "Return JSON only in this shape: {\"sub_questions\": [\"...\"]}. Keep each sub-question "
-                    "clear and self-contained.\n\n"
-                    f"{_wrap_user_content('academic_question', cleaned_question)}"
-                ),
-            },
-        ],
-        temperature=0,
-        json_mode=True,
-    )
-
-    sub_questions = result.get("sub_questions") if isinstance(result, dict) else None
-    if not isinstance(sub_questions, list):
-        return [cleaned_question]
-
-    cleaned_parts = [_clean_display_text(part) for part in sub_questions if _clean_display_text(part)]
-    if len(cleaned_parts) != len(markers) or len(set(cleaned_parts)) != len(cleaned_parts):
-        return [cleaned_question]
-    return cleaned_parts
 
 
 def _normalize_required_concepts(value: Any) -> list[str]:
@@ -590,43 +805,6 @@ def infer_required_concepts(question: str) -> list[str]:
         return []
 
 
-# ---------------------------------------------------------------------------
-# Generate 3 hint levels
-# ---------------------------------------------------------------------------
-
-def generate_hints(question):
-    """Return exactly 3 academic hints: concept, method, near-solution."""
-    result = _call_json_with_repair(
-        [
-            {"role": "system", "content": _academic_system_prompt()},
-            {
-                "role": "user",
-                "content": (
-                    f"Prompt version: {ACADEMIC_HINT_PROMPT_VERSION}\n"
-                    f"{_user_content_boundary_instruction()}\n\n"
-                    "Create exactly three progressive academic hints. Use this exact JSON schema: "
-                    f"{_as_json_schema_text(ACADEMIC_HINT_STAGES)}\n\n"
-                    "Operational definitions:\n"
-                    "concept: identify the relevant principle, formula, theorem, or concept. Do not substitute "
-                    "all values, perform the decisive calculation, or reveal the answer.\n"
-                    "method: describe the ordered method and identify relevant values or intermediate "
-                    "relationships. You may set up an equation, but do not complete the decisive final step.\n"
-                    "near_solution: show the final setup or last major intermediate step, leaving at least one "
-                    "meaningful calculation, inference, or conclusion for the student.\n\n"
-                    "Require progressive difficulty, no repeated wording, new information in each hint, same "
-                    "language as the user, no final-answer leakage, no Markdown headings or bold inside strings, "
-                    "and inline LaTeX only when needed.\n\n"
-                    f"{_wrap_user_content('academic_question', question)}"
-                ),
-            },
-        ],
-        validator=lambda value: _hint_contents(value, ACADEMIC_HINT_STAGES),
-        prompt_version=ACADEMIC_HINT_PROMPT_VERSION,
-    )
-
-    return result
-
-
 def _academic_schema_text(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False)
 
@@ -642,61 +820,57 @@ def infer_academic_response_type(question: str) -> dict[str, str]:
         return {"kind": "explanation", "label": "Your explanation", "placeholder": "State your answer and explain the key idea or evidence that supports it.", "guidance": "Support your answer with clear reasoning."}
     if any(term in lowered for term in ("code", "bug", "debug", "function", "program")):
         return {"kind": "code", "label": "Your reasoning", "placeholder": "Describe the bug or approach, then show the relevant code change.", "guidance": "Explain why your change addresses the problem."}
-    # Never make session creation depend on an LLM response; adaptive model calls happen after the student acts.
     return {"kind": "short_response", "label": "Your response", "placeholder": "Show the key steps in your thinking before giving your answer.", "guidance": "Explain enough reasoning to support your answer."}
-
-    # Retained below as a future model-assisted fallback, intentionally unreachable for reliability.
-    def validate(value):
-        if not isinstance(value, dict):
-            raise AIServiceError("Academic response type must be an object.")
-        kind = str(value.get("kind") or "short_response").strip().lower()
-        if kind not in {"derivation", "calculation", "explanation", "proof", "short_response", "code", "data_interpretation"}:
-            kind = "short_response"
-        return {"kind": kind, "label": _clean_short_text(value.get("label") or "Your response", maximum=80), "placeholder": _clean_short_text(value.get("placeholder") or "Show the key steps in your thinking.", maximum=260), "guidance": _clean_short_text(value.get("guidance") or "Explain enough reasoning to support your answer.", maximum=180)}
-    return _call_json_with_repair([
-        {"role": "system", "content": _academic_system_prompt()},
-        {"role": "user", "content": f"Prompt version: {ACADEMIC_RESPONSE_TYPE_PROMPT_VERSION}\n{_user_content_boundary_instruction()}\n\nClassify the expected student response without solving. Return JSON only with kind, label, placeholder, guidance. The placeholder must invite work but reveal no solution.\n\n{_wrap_user_content('academic_question', question)}"},
-    ], validator=validate, temperature=0, prompt_version=ACADEMIC_RESPONSE_TYPE_PROMPT_VERSION)
 
 
 def generate_initial_academic_hint(question: str, response_type: dict[str, str]) -> dict[str, str]:
     def validate(value):
         if not isinstance(value, dict): raise AIServiceError("Initial hint must be an object.")
         return {"type": "initial", "content": _clean_short_text(value.get("hint"), maximum=500), "focus": _clean_short_text(value.get("focus") or "key concept", maximum=120), "specificity": "conceptual"}
-    return _call_json_with_repair([
-        {"role": "system", "content": _academic_system_prompt()},
-        {"role": "user", "content": f"Prompt version: {ACADEMIC_HINT_PROMPT_VERSION}\n{_user_content_boundary_instruction()}\n\nGive one short conceptual hint before an attempt. Do not reveal the decisive calculation, derivation, or final answer. Prefer a focused question. Return JSON only as {{\"hint\":\"...\",\"focus\":\"...\"}}.\n\n{_wrap_user_content('academic_question', question)}\n\n{_wrap_user_content('response_type_json', _academic_schema_text(response_type))}"},
-    ], validator=validate, temperature=0.2, prompt_version=ACADEMIC_HINT_PROMPT_VERSION)
+    try:
+        return _call_json_with_repair([
+            {"role": "system", "content": _academic_system_prompt()},
+            {"role": "user", "content": f"Prompt version: {ACADEMIC_HINT_PROMPT_VERSION}\n{_user_content_boundary_instruction()}\n\nGive one short conceptual hint before an attempt. Do not reveal the decisive calculation, derivation, or final answer. Prefer a focused question. Use $...$ for inline math and $$...$$ for display math. Return JSON only as {{\"hint\":\"...\",\"focus\":\"...\"}}.\n\n{_wrap_user_content('academic_question', question)}\n\n{_wrap_user_content('response_type_json', _academic_schema_text(response_type))}"},
+        ], validator=validate, temperature=0.2, prompt_version=ACADEMIC_HINT_PROMPT_VERSION)
+    except AIStructuredResponseError:
+        return {
+            "type": "initial",
+            "content": "Which key principle connects the information you have to what the question asks you to find or explain?",
+            "focus": "key principle",
+            "specificity": "conceptual",
+        }
 
 
 def diagnose_academic_attempt(question: str, attempt: str, prior_attempts: list[str], hints: list[dict[str, str]]) -> dict[str, Any]:
     prohibited = re.compile(r"\b(the student|the learner|ask the student|tell the student|guide the student|encourage the student|their response|the candidate)\b", re.IGNORECASE)
-    def learner_text(value: Any, *, required: bool = True) -> str | None:
-        text = _clean_short_text(value, required=required, maximum=360) if required else _clean_short_text(value, required=False, maximum=360)
-        if text and prohibited.search(text):
-            raise AIServiceError("Academic feedback must speak directly to the learner.")
-        return text or None
+    solution_leakage = re.compile(r"\b(full solution|final answer is|the answer is)\b", re.IGNORECASE)
+
     def validate(value):
-        if not isinstance(value, dict): raise AIServiceError("Academic diagnosis must be an object.")
-        status = str(value.get("status") or "insufficient_work").lower()
-        if status not in ACADEMIC_DIAGNOSIS_STATUSES: raise AIServiceError("Academic diagnosis returned an unsupported status.")
-        strength = learner_text(value.get("strength"), required=status != "off_topic")
-        focus = learner_text(value.get("focus") or value.get("main_issue"), required=status != "correct")
-        next_action = learner_text(value.get("next_action"), required=True)
-        visible = " ".join(part for part in (strength, focus, next_action) if part)
-        if len(visible.split()) > 120:
+        if not isinstance(value, dict):
+            raise AIServiceError("Academic diagnosis must be an object.")
+        status = str(value.get("status") or "").strip().lower()
+        next_action = str(value.get("next_action") or "").strip().lower()
+        feedback = _clean_short_text(value.get("feedback"), maximum=900)
+        if status not in ACADEMIC_DIAGNOSIS_STATUSES:
+            raise AIServiceError("Academic diagnosis returned an unsupported status.")
+        if next_action not in ACADEMIC_NEXT_ACTIONS:
+            raise AIServiceError("Academic diagnosis returned an unsupported next action.")
+        if prohibited.search(feedback):
+            raise AIServiceError("Academic feedback must speak directly to the learner.")
+        if len(feedback.split()) > 120:
             raise AIServiceError("Academic feedback is too long.")
-        if strength and focus and strength.lower() == focus.lower():
-            raise AIServiceError("Academic feedback repeats the same point.")
-        return {"status": status, "is_complete": bool(value.get("is_complete", status in {"correct", "mostly_correct"})), "strength": strength, "focus": focus, "main_issue": focus, "misconception": learner_text(value.get("misconception"), required=False), "next_action": next_action, "allow_revision": bool(value.get("allow_revision", status != "correct")), "targeted_hint_available": bool(value.get("targeted_hint_available", status != "correct")), "solution_recommended": bool(value.get("solution_recommended", False))}
+        if status != "correct" and solution_leakage.search(feedback):
+            raise AIServiceError("Academic feedback appears to reveal the solution.")
+        return {"status": status, "next_action": next_action, "feedback": feedback}
+
     messages = [
         {"role": "system", "content": _academic_system_prompt()},
-        {"role": "user", "content": f"Prompt version: {ACADEMIC_DIAGNOSIS_PROMPT_VERSION}\n{_user_content_boundary_instruction()}\n\nAnalyse internally as a tutor, but write every returned feedback field directly to the learner. Never call the user 'the student' or 'the learner' and never give teacher instructions. Return only concise JSON with status, is_complete, strength, focus, next_action, allow_revision, targeted_hint_available, solution_recommended. Use one specific strength (or null), one highest-priority focus (or null when correct), and exactly one practical next action. Total visible feedback must be 40-90 words when possible and never exceed 120 words. Do not list every missing step or reveal a full solution.\n\n{_wrap_user_content('academic_question', question)}\n\n{_wrap_user_content('student_attempt', attempt)}\n\n{_wrap_user_content('previous_hints_json', _academic_schema_text(hints))}"},
+        {"role": "user", "content": f"Prompt version: {ACADEMIC_DIAGNOSIS_PROMPT_VERSION}\n{_user_content_boundary_instruction()}\n\nYou are looking at a learner's attempt in a live tutoring chat. Return JSON only with status, next_action, and feedback. status must be correct, mostly_correct, misconception, calculation_error, or incomplete. next_action must be hint, solution, or revise. Write feedback as one natural, direct paragraph under 120 words. Talk through what is working and what to fix without labels, bullet points, third-person phrases such as 'the student', or teacher instructions. You may naturally acknowledge a repeated mistake from an earlier attempt. Do not reveal the full solution or final answer, even when next_action is solution. Use $...$ for inline math and $$...$$ for display math.\n\n{_wrap_user_content('academic_question', question)}\n\n{_wrap_user_content('previous_attempts_json', _academic_schema_text(prior_attempts))}\n\n{_wrap_user_content('latest_attempt', attempt)}\n\n{_wrap_user_content('previous_hints_json', _academic_schema_text(hints))}"},
     ]
     try:
         return _call_json_with_repair(messages, validator=validate, temperature=0.15, prompt_version=ACADEMIC_DIAGNOSIS_PROMPT_VERSION)
     except AIServiceError:
-        return {"status": "incomplete", "is_complete": False, "strength": "You have made a useful start.", "focus": "One important part of the reasoning is still missing.", "main_issue": "One important part of the reasoning is still missing.", "misconception": None, "next_action": "Review the connection between your current steps, then revise your response.", "allow_revision": True, "targeted_hint_available": True, "solution_recommended": False}
+        return {"status": "incomplete", "next_action": "hint", "feedback": "Let's take another look at this together — can you walk me through your thinking so far?"}
 
 
 def generate_targeted_academic_hint(question: str, attempt: str, diagnosis: dict[str, Any], prior_hints: list[dict[str, str]]) -> dict[str, str]:
@@ -705,117 +879,53 @@ def generate_targeted_academic_hint(question: str, attempt: str, diagnosis: dict
         content = _clean_short_text(value.get("hint"), maximum=500)
         if any(content == hint.get("content") for hint in prior_hints): raise AIServiceError("Targeted hint repeated a previous hint.")
         return {"type": "targeted", "content": content, "focus": _clean_short_text(value.get("focus") or "next reasoning step", maximum=120), "specificity": str(value.get("specificity") or "targeted")}
-    return _call_json_with_repair([
-        {"role": "system", "content": _academic_system_prompt()},
-        {"role": "user", "content": f"Prompt version: {ACADEMIC_TARGETED_HINT_PROMPT_VERSION}\n{_user_content_boundary_instruction()}\n\nGive one concise hint that addresses the diagnosis and does not repeat previous hints or reveal the final answer. Return JSON only with hint, focus, specificity.\n\n{_wrap_user_content('academic_question', question)}\n\n{_wrap_user_content('student_attempt', attempt)}\n\n{_wrap_user_content('diagnosis_json', _academic_schema_text(diagnosis))}\n\n{_wrap_user_content('previous_hints_json', _academic_schema_text(prior_hints))}"},
-    ], validator=validate, temperature=0.2, prompt_version=ACADEMIC_TARGETED_HINT_PROMPT_VERSION)
+    try:
+        return _call_json_with_repair([
+            {"role": "system", "content": _academic_system_prompt()},
+            {"role": "user", "content": f"Prompt version: {ACADEMIC_TARGETED_HINT_PROMPT_VERSION}\n{_user_content_boundary_instruction()}\n\nGive one concise hint that addresses the diagnosis and does not repeat previous hints or reveal the final answer. Use $...$ for inline math and $$...$$ for display math. Return JSON only with hint, focus, specificity.\n\n{_wrap_user_content('academic_question', question)}\n\n{_wrap_user_content('student_attempt', attempt)}\n\n{_wrap_user_content('diagnosis_json', _academic_schema_text(diagnosis))}\n\n{_wrap_user_content('previous_hints_json', _academic_schema_text(prior_hints))}"},
+        ], validator=validate, temperature=0.2, prompt_version=ACADEMIC_TARGETED_HINT_PROMPT_VERSION)
+    except AIStructuredResponseError:
+        return {
+            "type": "targeted",
+            "content": "Focus on the issue identified in the feedback, then check whether your latest step follows from the one before it.",
+            "focus": "latest reasoning step",
+            "specificity": "targeted",
+        }
 
 
 def generate_worked_solution(question: str, response_type: dict[str, str]) -> dict[str, Any]:
+    step_pattern = re.compile(
+        r"(?im)^\s*(?:#{1,6}\s+|step\s+\d+\s*:|\d+[.)]\s+|[-*•]\s+|"
+        r"(?:approach|method|working|solution|calculation|substitution|derivation)\s*:)",
+    )
+
     def validate(value):
-        if not isinstance(value, dict): raise AIServiceError("Worked solution must be an object.")
-        steps = value.get("steps")
-        if not isinstance(steps, list) or not 2 <= len(steps) <= 5: raise AIServiceError("Worked solution needs two to five steps.")
-        cleaned_steps = []
-        for step in steps:
-            if not isinstance(step, dict): raise AIServiceError("Worked solution steps must be objects.")
-            cleaned_steps.append({"title": _clean_short_text(step.get("title"), maximum=80), "explanation": _clean_short_text(step.get("explanation"), maximum=420), "expression": _clean_short_text(step.get("expression"), required=False, maximum=400) or None})
-        return {"summary": _clean_short_text(value.get("summary"), maximum=300), "steps": cleaned_steps, "final_answer": _clean_short_text(value.get("final_answer"), maximum=500)}
+        if not isinstance(value, dict):
+            raise AIServiceError("Worked solution must be an object.")
+        if not isinstance(value.get("full_working"), str) or not isinstance(value.get("final_answer"), str):
+            raise AIServiceError("Worked solution fields must be strings.")
+        raw_full_working = _basic_clean_text(value.get("full_working"))
+        if step_pattern.search(raw_full_working):
+            raise AIServiceError("Worked solution must be continuous rather than structured steps.")
+        full_working = _clean_display_text(raw_full_working)
+        final_answer = _normalize_final_answer(value.get("final_answer"))
+        if not final_answer:
+            raise AIServiceError("Worked solution must include a final answer.")
+        if len(final_answer) > 500:
+            raise AIServiceError("Worked solution final answer is too long.")
+        if not full_working:
+            raise AIServiceError("Worked solution must include full working.")
+        if len(full_working) > 6000:
+            raise AIServiceError("Worked solution is too long.")
+        return {"full_working": full_working, "final_answer": final_answer}
+
     try:
         return _call_json_with_repair([
         {"role": "system", "content": _academic_system_prompt()},
-        {"role": "user", "content": f"Prompt version: {ACADEMIC_WORKED_SOLUTION_PROMPT_VERSION}\n{_user_content_boundary_instruction()}\n\nReturn a concise structured worked solution, not a paragraph. Return JSON only with summary, steps (2-5 objects with title, explanation, expression or null), and final_answer. Use renderer-compatible LaTex for maths, e.g. $W_{{\\text{{gravity}}}} = -mgh$, never raw identifiers such as W_gravity or E_p when mathematical notation is intended. Keep only essential reasoning and do not repeat the final result. Adapt steps to the task type; preserve code in Markdown code formatting.\n\n{_wrap_user_content('academic_question', question)}\n\n{_wrap_user_content('response_type_json', _academic_schema_text(response_type))}"},
+        {"role": "user", "content": f"Prompt version: {ACADEMIC_WORKED_SOLUTION_PROMPT_VERSION}\n{_user_content_boundary_instruction()}\n\nThe learner has made at least one attempt and is ready to see the complete worked solution.\n\nReturn JSON only with these fields:\n\n{{\n  \"full_working\": \"...\",\n  \"final_answer\": \"...\"\n}}\n\nfull_working:\n- Write one continuous explanation, not a steps array.\n- Divide the explanation into short paragraphs at natural transitions, such as after introducing the approach, after deriving the working relationship, after substituting values, and before the final calculation.\n- Separate paragraphs with exactly one blank line (\\n\\n).\n- Each paragraph should normally contain 1-3 sentences.\n- Do not use headings, labels, bullet points, numbered lists, or phrases such as \"Step 1\" and \"Step 2\".\n- Write as a tutor pausing naturally between connected ideas.\n- Keep prose as plain text.\n- Wrap inline mathematical expressions in $...$.\n- Wrap standalone equations in $$...$$.\n- Because the response is JSON, encode every LaTeX backslash as \\\\ so it survives JSON parsing.\n- Do not repeat the final answer unnecessarily in the working.\n\nfinal_answer:\n- If the answer is a numeric quantity, return only its value and unit.\n- Do not include a variable name, equals sign, explanatory phrase, or approximation sentence.\n- Use real Unicode superscript and subscript characters: \"3.71 m/s²\", not \"3.71 m/s^2\".\n- Numeric final answers must not contain $, $$, ^, \\mathrm{{}}, \\text{{}}, \\,, or any other LaTeX command.\n- Use Unicode symbols such as ×, ·, ², ³, ⁻¹, and subscripts where needed.\n- A dimensionless numeric answer may contain only the number.\n- If the answer is symbolic or cannot be represented accurately with Unicode, return one concise LaTeX expression wrapped in $...$.\n- A prose conclusion may be returned as one concise plain-text sentence.\n\n{_wrap_user_content('academic_question', question)}\n\n{_wrap_user_content('response_type_json', _academic_schema_text(response_type))}"},
     ], validator=validate, temperature=0, prompt_version=ACADEMIC_WORKED_SOLUTION_PROMPT_VERSION)
     except AIServiceError:
-        return {"summary": "Review the essential reasoning below.", "steps": [{"title": "Use the relevant method", "explanation": "Apply the relationship or principle that directly addresses the question.", "expression": None}, {"title": "State the conclusion", "explanation": "Check that your conclusion answers the original task.", "expression": None}], "final_answer": "See the worked reasoning above."}
-
-
-# ---------------------------------------------------------------------------
-# Generate final answer
-# ---------------------------------------------------------------------------
-
-def generate_final_answer(question):
-    """Generate the correct final answer for a question."""
-    text = _call_ai(
-        [
-            {"role": "system", "content": _academic_system_prompt()},
-            {
-                "role": "user",
-                "content": (
-                    f"{_user_content_boundary_instruction()}\n\n"
-                    "Solve this question accurately. Return only the final answer, not the full working. "
-                    "Do not use Markdown bold or bullet points. Use inline LaTeX math with single dollar signs if needed.\n\n"
-                    f"{_wrap_user_content('academic_question', question)}"
-                ),
-            },
-        ],
-        temperature=0,
-    )
-    return _clean_display_text(text)
-
-
-# ---------------------------------------------------------------------------
-# Check attempts
-# ---------------------------------------------------------------------------
-
-def check_attempt(question, student_answer, correct_answer):
-    """Check if the student's answer is correct."""
-    if not student_answer or not student_answer.strip():
-        return {"correct": False, "feedback": "Please provide an answer before submitting."}
-
-    result = _call_ai(
-        [
-            {"role": "system", "content": _academic_system_prompt()},
-            {
-                "role": "user",
-                "content": (
-                    f"{_user_content_boundary_instruction()}\n\n"
-                    "Evaluate the student's answer against the correct answer. Accept mathematically equivalent "
-                    "answers. Return JSON only in this shape: {\"correct\": true/false, \"feedback\": \"short helpful feedback\"}. "
-                    "Do not use Markdown bold, headings, or bullet points in the feedback. Use inline LaTeX math with "
-                    "single dollar signs when needed.\n\n"
-                    f"{_wrap_user_content('academic_question', question)}\n\n"
-                    f"{_wrap_user_content('correct_answer', correct_answer)}\n\n"
-                    f"{_wrap_user_content('student_answer', student_answer)}"
-                ),
-            },
-        ],
-        temperature=0,
-        json_mode=True,
-    )
-
-    if not isinstance(result, dict):
-        raise AIServiceError("The text model returned an invalid attempt response.")
-
-    return {
-        "correct": bool(result.get("correct")),
-        "feedback": _clean_display_text(result.get("feedback") or "Review your working and try again."),
-    }
-
-
-# ---------------------------------------------------------------------------
-# Generate explanations
-# ---------------------------------------------------------------------------
-
-def generate_explanation(question, correct_answer):
-    """Generate a short explanation of why the academic answer is correct."""
-    text = _call_ai(
-        [
-            {"role": "system", "content": _academic_system_prompt()},
-            {
-                "role": "user",
-                "content": (
-                    f"{_user_content_boundary_instruction()}\n\n"
-                    "Write a short explanation of why this answer is correct. Keep it student-friendly and concise. "
-                    "Do not use Markdown bold, headings, or bullet points. Use inline LaTeX math with single dollar signs when needed.\n\n"
-                    f"{_wrap_user_content('academic_question', question)}\n\n"
-                    f"{_wrap_user_content('correct_answer', correct_answer)}"
-                ),
-            },
-        ],
-        temperature=0.2,
-    )
-    return _clean_display_text(text)
+        return {"full_working": "We had trouble generating the full solution right now — try asking again in a moment.", "final_answer": ""}
 
 
 # ---------------------------------------------------------------------------
@@ -825,9 +935,9 @@ def generate_explanation(question, correct_answer):
 def _clean_short_text(value: Any, *, required: bool = True, maximum: int = 600) -> str:
     text = _clean_display_text(_basic_clean_text(value))
     if required and not text:
-        raise AIServiceError("Idea response contained an empty required field.")
+        raise AIServiceError("AI response contained an empty required field.")
     if len(text) > maximum:
-        raise AIServiceError("Idea response contained a field that is too long.")
+        raise AIServiceError("AI response contained a field that is too long.")
     return text
 
 

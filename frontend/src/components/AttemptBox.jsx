@@ -1,6 +1,6 @@
 import { useState } from 'react'
 
-export default function AttemptBox({ onSubmit, loading, disabled, label = 'Your response', placeholder = 'Show your reasoning here...', submitLabel = 'Check my answer' }) {
+export default function AttemptBox({ onSubmit, loading, disabled, recommended = false, label = 'Your response', placeholder = 'Show your reasoning here...', submitLabel = 'Check my answer' }) {
   const [answer, setAnswer] = useState('')
 
   const handleSubmit = (e) => {
@@ -11,7 +11,7 @@ export default function AttemptBox({ onSubmit, loading, disabled, label = 'Your 
   }
 
   return (
-    <form className="attempt-form" onSubmit={handleSubmit}>
+    <form className={`attempt-form ${recommended ? 'is-recommended' : ''}`} onSubmit={handleSubmit}>
       <label className="input-label" htmlFor="attempt-input">{label}</label>
       <div className="attempt-row">
         <textarea

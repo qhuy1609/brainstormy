@@ -1,9 +1,9 @@
 import { useState } from 'react'
-import ProgressBar from './ProgressBar.jsx'
 import HintCard from './HintCard.jsx'
 import AttemptBox from './AttemptBox.jsx'
 import FeedbackBox from './FeedbackBox.jsx'
 import MathText from './MathText.jsx'
+import { isSymbolicFinalAnswer } from '../utils/normalizeAiText.js'
 import ConceptTags from './ConceptTags.jsx'
 import IdeaSessionView from './IdeaSessionView.jsx'
 import { fetchSessionState, requestHint, submitAttempt, revealAnswer } from '../api/learningApi.js'
@@ -23,9 +23,7 @@ export default function SessionView({ initialSession, onReset, onError }) {
   const [maxHintsReached, setMaxHintsReached] = useState(false)
 
   const isCompleted = session.status === 'completed'
-  const currentPart = session.current_sub_question_index + 1
-  const totalParts = session.total_sub_questions
-  const isIdeaMode = session.mode === 'idea'
+  const recommendedAction = feedback?.diagnosis?.next_action
 
   // Refresh session state from backend
   const refresh = async () => {
@@ -40,17 +38,6 @@ export default function SessionView({ initialSession, onReset, onError }) {
   // When feedback comes in with next sub-question, update session
   const handleAttemptResult = (result) => {
     setFeedback(result)
-    if (result.correct && !result.session_completed && result.next_sub_question) {
-      setSession(prev => ({
-        ...prev,
-        current_sub_question_index: result.next_sub_question_index,
-        current_sub_question: result.next_sub_question,
-        current_hint_level: result.next_hint_level,
-        current_hint_title: result.next_hint_title,
-        current_hint: result.next_hint,
-      }))
-      setFeedback(prev => ({ ...prev, _autoAdvanced: true }))
-    }
     if (result.session_completed) {
       setSession(prev => ({ ...prev, status: 'completed' }))
     }
@@ -96,7 +83,7 @@ export default function SessionView({ initialSession, onReset, onError }) {
     setRevealError('')
     try {
       const data = await revealAnswer(session.session_id)
-      setRevealedAnswer(data.worked_solution || { final_answer: data.answer, steps: [] })
+      setRevealedAnswer(data.worked_solution || { full_working: '', final_answer: data.answer })
     } catch (err) {
       setRevealError(err.message)
     } finally {
@@ -110,7 +97,7 @@ export default function SessionView({ initialSession, onReset, onError }) {
         <div className="card complete-card">
           <div className="complete-icon">&#10003;</div>
           <h2>Session Complete</h2>
-          <p>You worked through {totalParts} {totalParts === 1 ? (isIdeaMode ? 'idea' : 'question') : (isIdeaMode ? 'ideas' : 'questions')}. Great job thinking it through!</p>
+          <p>You worked through the question. Great job thinking it through!</p>
           {feedback && feedback.explanation && (
             <div className="explanation-box">
               <strong>Explanation:</strong>
@@ -127,10 +114,9 @@ export default function SessionView({ initialSession, onReset, onError }) {
 
   return (
     <div className="session-view">
-      {totalParts > 1 && <ProgressBar current={currentPart} total={totalParts} />}
       <div className="card question-display-card">
-        <div className="card-label">{totalParts > 1 ? `Part ${currentPart} of ${totalParts}` : 'Question'}</div>
-        <div className="sub-question-text"><MathText>{session.current_sub_question}</MathText></div>
+        <div className="card-label">Question</div>
+        <div className="sub-question-text"><MathText>{session.question}</MathText></div>
         <ConceptTags concepts={session.requiredConcepts} />
       </div>
 
@@ -146,12 +132,13 @@ export default function SessionView({ initialSession, onReset, onError }) {
         onSubmit={handleAttempt}
         loading={attemptLoading}
         disabled={isCompleted}
+        recommended={recommendedAction === 'revise'}
         label={session.response_type?.label || 'Your reasoning'}
         placeholder={session.response_type?.placeholder || 'Show the key steps in your thinking.'}
         submitLabel={feedback ? 'Check revised answer' : 'Check my answer'}
       />
 
-      <button className="btn btn-secondary btn-hint" onClick={handleHint} disabled={hintLoading || isCompleted}>
+      <button className={`btn btn-secondary btn-hint ${recommendedAction === 'hint' ? 'is-recommended' : ''}`} onClick={handleHint} disabled={hintLoading || isCompleted}>
         {hintLoading ? <span className="spinner" /> : (feedback ? 'Give me a targeted hint' : "I'm stuck - give me a hint")}
       </button>
 
@@ -159,7 +146,7 @@ export default function SessionView({ initialSession, onReset, onError }) {
 
       <div className="reveal-section">
         <button
-          className="btn btn-ghost btn-reveal"
+          className={`btn btn-ghost btn-reveal ${recommendedAction === 'solution' ? 'is-recommended' : ''}`}
           onClick={handleReveal}
           disabled={revealLoading || isCompleted || !session.attempt_count && !feedback}
         >
@@ -169,11 +156,15 @@ export default function SessionView({ initialSession, onReset, onError }) {
         {revealedAnswer && (
           <div className="card reveal-card">
             <div className="card-label">Worked solution</div>
-            {revealedAnswer.summary && <div className="solution-overview"><MathText>{revealedAnswer.summary}</MathText></div>}
-            <ol className="worked-solution-steps">
-              {revealedAnswer.steps?.map((step) => <li key={step.title}><h3>{step.title}</h3><MathText>{step.explanation}</MathText>{step.expression && <div className="solution-expression"><MathText>{step.expression}</MathText></div>}</li>)}
-            </ol>
-            <div className="solution-final-answer"><span>Final answer</span><MathText>{revealedAnswer.final_answer}</MathText></div>
+            {revealedAnswer.full_working && <div className="solution-full-working"><MathText>{revealedAnswer.full_working}</MathText></div>}
+            {revealedAnswer.final_answer && (
+              <div className="solution-final-answer">
+                <span className="solution-final-label">Final answer</span>
+                {isSymbolicFinalAnswer(revealedAnswer.final_answer)
+                  ? <MathText>{revealedAnswer.final_answer}</MathText>
+                  : <span className="solution-final-value">{revealedAnswer.final_answer}</span>}
+              </div>
+            )}
           </div>
         )}
 

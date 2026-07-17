@@ -10,6 +10,8 @@ from services.session_service import (
     get_next_hint,
     get_session_state,
     submit_idea_answers,
+    submit_attempt,
+    reveal_answer,
 )
 from storage.memory_store import store
 
@@ -60,17 +62,39 @@ class ResponseModeTests(unittest.TestCase):
         self.assertEqual(create.call_args.args[4], "academic")
 
     def test_academic_mode_keeps_hint_generation_strategy(self):
-        with patch("services.session_service.validate_input", return_value={"valid": True, "message": "OK"}), \
-             patch("services.session_service.clean_question", return_value="Factorise x^2 + 5x + 6"), \
-             patch("services.session_service.decompose_question", return_value=["Factorise x^2 + 5x + 6"]), \
+        validation = {"valid": True, "message": "OK", "cleaned_question": "Factorise $x^2 + 5x + 6$", "is_multi_part": False}
+        with patch("services.session_service.validate_academic_request", return_value=validation), \
              patch("services.session_service.infer_academic_response_type", return_value={"kind": "calculation", "label": "Your calculation", "placeholder": "Show your steps", "guidance": "Show the formula"}) as response_type, \
-             patch("services.session_service.infer_required_concepts", return_value=["Quadratic equations", "Algebraic expressions"]), \
-             patch("services.session_service.generate_final_answer", return_value="(x+2)(x+3)"):
+             patch("services.session_service.infer_required_concepts", return_value=["Quadratic equations", "Algebraic expressions"]):
             result = create_session("Factorise x^2 + 5x + 6", "text", None, False, "academic")
         self.assertEqual(result["mode"], "academic")
+        self.assertEqual(result["question"], "Factorise $x^2 + 5x + 6$")
         self.assertEqual(result["response_type"]["kind"], "calculation")
         self.assertEqual(result["requiredConcepts"], ["Quadratic equations", "Algebraic expressions"])
         response_type.assert_called_once()
+
+    def test_single_question_attempt_and_reveal_flow(self):
+        validation = {"valid": True, "message": "OK", "cleaned_question": "Solve $x + 2 = 5$.", "is_multi_part": False}
+        diagnosis = {"status": "calculation_error", "next_action": "revise", "feedback": "Your setup is close; recheck the subtraction and try again."}
+        solution = {"full_working": "Subtract $2$ from both sides, giving $x = 3$.", "final_answer": "$x = 3$"}
+        with patch("services.session_service.validate_academic_request", return_value=validation), \
+             patch("services.session_service.infer_required_concepts", return_value=["Linear equations", "Algebra"]), \
+             patch("services.session_service.diagnose_academic_attempt", return_value=diagnosis), \
+             patch("services.session_service.generate_worked_solution", return_value=solution):
+            created = create_session("Solve x + 2 = 5.", "text", None, False, "academic")
+            attempted = submit_attempt(created["session_id"], "x = -3")
+            revealed = reveal_answer(created["session_id"])
+        self.assertEqual(attempted["feedback"], diagnosis["feedback"])
+        self.assertEqual(attempted["diagnosis"]["next_action"], "revise")
+        self.assertEqual(revealed["worked_solution"], solution)
+        self.assertNotIn("current_sub_question_index", created)
+
+    def test_health_requires_only_key_and_text_model(self):
+        with patch("app.OPENROUTER_API_KEY", "key"), patch("app.AI_TEXT_MODEL", "vision-model"):
+            response = self.client.get("/api/health")
+        payload = response.get_json()
+        self.assertTrue(payload["ai_configured"])
+        self.assertNotIn("image_model", payload)
 
     def test_broad_idea_request_starts_discovery_without_hints(self):
         with patch("services.session_service.validate_input", return_value={"valid": True, "message": "OK"}), \
@@ -136,7 +160,7 @@ class ResponseModeTests(unittest.TestCase):
 
     def test_idea_image_requests_use_existing_upload_pipeline(self):
         image = UploadedImage()
-        with patch("services.session_service.extract_text_from_image", return_value="a sketch of a city skyline"), \
+        with patch("services.session_service.extract_idea_context_from_image", return_value="a sketch of a city skyline"), \
              patch("services.session_service.validate_input", return_value={"valid": True, "message": "OK"}), \
              patch("services.session_service.clean_idea_request", side_effect=lambda text, **kwargs: text), \
              patch("services.session_service.plan_idea_discovery", return_value=discovery_plan()) as planner:

@@ -1,10 +1,11 @@
 from flask import Blueprint, request, jsonify
-from ai.image_model import ImageInputError
+from ai.image_input import ImageInputError
 from ai.openrouter import (
     AIConfigError,
     AIEmptyResponseError,
     AIRateLimitError,
     AIServiceError,
+    AIStructuredResponseError,
     AIUnsupportedImageError,
 )
 from services.session_service import (
@@ -33,6 +34,8 @@ def _ai_error_response(error):
         return jsonify({"error": str(error)}), 400
     if isinstance(error, AIEmptyResponseError):
         return jsonify({"error": str(error)}), 502
+    if isinstance(error, AIStructuredResponseError):
+        return jsonify({"error": "The AI response could not be processed. Please try again."}), 502
     if isinstance(error, AIServiceError):
         return jsonify({"error": str(error)}), 502
     return None

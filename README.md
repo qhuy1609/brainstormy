@@ -2,14 +2,14 @@
 
 **An AI tutor that protects your thinking, not replaces it.**
 
-brainstormy accepts a typed homework question, an uploaded image, or both. It validates that the request is study-related, splits multi-part questions when needed, gives progressive hints, checks student attempts, and reveals the final answer only when allowed.
+brainstormy accepts a typed homework question, an uploaded image, or both. It validates that the request is study-related, asks users to submit multi-part work one question at a time, gives adaptive hints, diagnoses attempts, and can reveal a worked solution after an attempt.
 
 ## What changed in this build
 
 - All AI calls now go through OpenRouter.
-- Text-only questions use `AI_TEXT_MODEL`.
-- Image uploads use `AI_IMAGE_MODEL` first to extract structured question content, then `AI_TEXT_MODEL` for the normal tutor pipeline.
-- Typed text can be sent together with an uploaded image and is combined with the image extraction before final reasoning.
+- Every AI call uses one vision-capable `AI_TEXT_MODEL`.
+- Academic image uploads are extracted and validated in one multimodal call.
+- Idea-mode image uploads use the same model to extract creative context before discovery.
 - API secrets are kept in `backend/.env`, which should not be committed to Git.
 
 ## Requirements
@@ -33,14 +33,11 @@ cp .env.example .env          # On Windows: copy .env.example .env
 Open `backend/.env` and configure OpenRouter:
 
 ```env
-# OpenRouter API key used for both text and image models
+# OpenRouter API key
 OPENROUTER_API_KEY=
 
-# Used for normal text-only questions and final reasoning
-AI_TEXT_MODEL=deepseek/deepseek-chat-v3.1
-
-# Used only when the user uploads an image or the request contains image input
-AI_IMAGE_MODEL=google/gemini-2.5-flash-lite
+# Must support text, image input, and structured JSON
+AI_TEXT_MODEL=google/gemini-3.1-flash-lite
 ```
 
 Start the backend:
@@ -90,27 +87,26 @@ The backend reads these environment variables from `backend/.env`:
 
 | Variable | Required | Example | Purpose |
 | --- | --- | --- | --- |
-| `OPENROUTER_API_KEY` | Yes | `sk-or-...` | OpenRouter API key used for both text and image models. |
-| `AI_TEXT_MODEL` | Yes | `deepseek/deepseek-chat-v3.1` | Model used for text-only questions and final tutor reasoning. |
-| `AI_IMAGE_MODEL` | Yes | `google/gemini-2.5-flash-lite` | Vision-capable model used only to read uploaded images. |
+| `OPENROUTER_API_KEY` | Yes | `sk-or-...` | OpenRouter API key. |
+| `AI_TEXT_MODEL` | Yes | `google/gemini-3.1-flash-lite` | Vision-capable model used for text, images, structured validation, and tutoring. |
 
 ## AI routing
 
 Text-only flow:
 
 ```text
-User text question -> OpenRouter + AI_TEXT_MODEL -> normal tutor session
+User text question -> OpenRouter + AI_TEXT_MODEL validation -> tutor session
 ```
 
 Image flow:
 
 ```text
-Uploaded image -> OpenRouter + AI_IMAGE_MODEL for extraction
-               -> extracted structured text plus any typed text
-               -> OpenRouter + AI_TEXT_MODEL for validation, cleanup, hints, answers, and feedback
+Academic image -> OpenRouter + AI_TEXT_MODEL for extraction and validation in one call
+Idea image     -> OpenRouter + AI_TEXT_MODEL for creative-context extraction
+               -> normal Idea discovery flow
 ```
 
-The text model is the final reasoning model. Raw images are not sent to the text model by default.
+The configured model must accept image input. Academic images and any accompanying typed context are sent together.
 
 ## Text, Markdown, and math rendering
 
@@ -121,7 +117,7 @@ The frontend uses:
 - `rehype-katex`
 - `katex`
 
-This is why AI responses containing Markdown or LaTeX, such as `**work**` or `$E_p = mgh$`, render properly in the browser. The `MathText.jsx` component also normalizes common escaped AI output like `\$...\$`, `\(...\)`, and one-line numbered explanations.
+This is why AI responses containing Markdown or LaTeX, such as `$E_p = mgh$` and `$$E_p = mgh$$`, render properly in the browser. The math normalizer also accepts legacy `\(...\)` and `\[...\]` delimiters.
 
 ## Project structure
 
@@ -131,7 +127,7 @@ brainstormy/
     ai/
       openrouter.py
       text_model.py
-      image_model.py
+      image_input.py
     app.py
     requirements.txt
     .env.example
@@ -152,8 +148,8 @@ brainstormy/
 ## Sanity checks
 
 - Text-only question: submit text without an image and confirm the backend logs the text route and selected text model.
-- Image-only question: upload a jpg, png, or webp and confirm the backend logs image extraction followed by text generation.
-- Text plus image: upload an image while leaving typed text in the textarea and confirm both are included in the session question.
+- Academic image: upload a jpg, png, or webp and confirm one multimodal validation call is logged.
+- Text plus image: upload an image with typed context and confirm both are included in the accepted question.
 - Missing env vars: temporarily remove one required variable from `backend/.env`, restart the backend, and confirm the frontend receives a readable config error.
 - Rate limit: if OpenRouter returns 429, the frontend should show a model-specific rate-limit message.
 
@@ -177,7 +173,7 @@ Restart the backend after editing `.env`.
 
 ### Image upload fails
 
-Use `jpg`, `jpeg`, `png`, or `webp` images under 8 MB. Also check that `AI_IMAGE_MODEL` is a vision-capable OpenRouter model.
+Use `jpg`, `jpeg`, `png`, or `webp` images under 8 MB. Also check that `AI_TEXT_MODEL` is a vision-capable OpenRouter model.
 
 ### Text generation is rate-limited
 

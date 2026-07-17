@@ -3,9 +3,9 @@ import os
 import unittest
 from unittest.mock import patch
 
-from ai.openrouter import AIConfigError
-from ai import image_model, text_model
-from services.session_service import _build_image_augmented_input
+from ai import text_model
+from ai.image_input import ImageInputError, image_file_to_content
+from ai.openrouter import AIConfigError, AIUnsupportedImageError
 
 
 class UploadedImage(io.BytesIO):
@@ -16,31 +16,40 @@ class UploadedImage(io.BytesIO):
 
 
 class AIRoutingTests(unittest.TestCase):
-    def test_text_model_uses_ai_text_model(self):
-        with patch.dict(os.environ, {"AI_TEXT_MODEL": "text-model"}, clear=False):
+    def test_text_model_uses_ai_text_model_for_multimodal_messages(self):
+        messages = [{"role": "user", "content": [
+            {"type": "text", "text": "Read this"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,ZmFrZQ=="}},
+        ]}]
+        with patch.dict(os.environ, {"AI_TEXT_MODEL": "vision-text-model"}, clear=False):
             with patch("ai.text_model.call_openrouter", return_value="ok") as call:
-                self.assertEqual(text_model.call_text_model([{"role": "user", "content": "Hi"}]), "ok")
+                self.assertEqual(text_model.call_text_model(messages), "ok")
+        self.assertEqual(call.call_args.kwargs["model"], "vision-text-model")
+        self.assertEqual(call.call_args.kwargs["messages"], messages)
 
-        self.assertEqual(call.call_args.kwargs["model"], "text-model")
-
-    def test_image_model_uses_ai_image_model_first(self):
+    def test_image_helper_builds_data_url_and_rewinds_file(self):
         image = UploadedImage(b"fake-image-bytes")
+        content = image_file_to_content(image)
+        self.assertEqual(content["type"], "image_url")
+        self.assertTrue(content["image_url"]["url"].startswith("data:image/png;base64,"))
+        self.assertEqual(image.tell(), 0)
 
-        with patch.dict(os.environ, {"AI_IMAGE_MODEL": "image-model"}, clear=False):
-            with patch("ai.image_model.call_openrouter", return_value="extracted text") as call:
-                self.assertEqual(image_model.extract_question_from_image(image), "extracted text")
+    def test_image_helper_rejects_unsupported_type(self):
+        with self.assertRaises(ImageInputError):
+            image_file_to_content(UploadedImage(b"data", filename="question.gif", mimetype="image/gif"))
 
-        kwargs = call.call_args.kwargs
-        self.assertEqual(kwargs["model"], "image-model")
-        content = kwargs["messages"][0]["content"]
-        self.assertEqual(content[1]["type"], "image_url")
-        self.assertTrue(content[1]["image_url"]["url"].startswith("data:image/png;base64,"))
+    def test_image_helper_rejects_empty_and_oversized_files(self):
+        with self.assertRaises(ImageInputError):
+            image_file_to_content(UploadedImage(b""))
+        with self.assertRaises(ImageInputError):
+            image_file_to_content(UploadedImage(b"x" * (8 * 1024 * 1024 + 1)))
 
-    def test_text_and_image_content_are_combined(self):
-        combined = _build_image_augmented_input("typed context", "image extracted question")
-
-        self.assertIn("image extracted question", combined)
-        self.assertIn("typed context", combined)
+    def test_unsupported_image_error_is_preserved(self):
+        with patch.dict(os.environ, {"AI_TEXT_MODEL": "text-only"}, clear=False), \
+             patch("ai.text_model.call_openrouter", side_effect=AIUnsupportedImageError("unsupported")):
+            with self.assertRaises(AIUnsupportedImageError) as raised:
+                text_model.call_text_model([{"role": "user", "content": []}])
+        self.assertIn("vision-capable", str(raised.exception))
 
     def test_missing_text_model_returns_config_error(self):
         with patch.dict(os.environ, {"AI_TEXT_MODEL": ""}, clear=False):

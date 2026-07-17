@@ -6,6 +6,7 @@ from ai.openrouter import (
     AIEmptyResponseError,
     AIRateLimitError,
     AIServiceError,
+    AIUnsupportedImageError,
     call_openrouter,
     require_env,
 )
@@ -43,5 +44,9 @@ def call_text_model(
         raise AIRateLimitError("The text model is currently rate-limited. Try another AI_TEXT_MODEL.") from exc
     except AIEmptyResponseError as exc:
         raise AIEmptyResponseError("The text model returned an empty response. Try another AI_TEXT_MODEL.") from exc
+    except AIUnsupportedImageError as exc:
+        raise AIUnsupportedImageError(
+            "The selected AI_TEXT_MODEL does not support this uploaded image. Choose a vision-capable model."
+        ) from exc
     except AIServiceError as exc:
         raise AIServiceError("The text model is currently unavailable. Try again or switch AI_TEXT_MODEL.") from exc
