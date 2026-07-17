@@ -211,6 +211,10 @@ export default function IdeaSessionView({ initialSession, onReset, onError }) {
       {!isDiscovery && flow.ideas?.length === 0 && (
         <button type="button" className="btn btn-primary" onClick={generateNow} disabled={loading}>Generate ideas now</button>
       )}
+
+      <button type="button" className="btn-back" onClick={onReset}>
+        back to input
+      </button>
     </section>
   )
 }

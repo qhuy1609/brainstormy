@@ -130,29 +130,26 @@ export default function SessionView({ initialSession, onReset, onError }) {
 
       <AttemptBox
         onSubmit={handleAttempt}
+        onHint={handleHint}
+        onReveal={handleReveal}
         loading={attemptLoading}
+        hintLoading={hintLoading}
+        revealLoading={revealLoading}
         disabled={isCompleted}
+        revealDisabled={!session.attempt_count && !feedback}
         recommended={recommendedAction === 'revise'}
-        label={session.response_type?.label || 'Your reasoning'}
+        hintRecommended={recommendedAction === 'hint'}
+        solutionRecommended={recommendedAction === 'solution'}
+        label={session.response_type?.kind === 'calculation' ? 'Your working' : (session.response_type?.label || 'Your reasoning')}
         placeholder={session.response_type?.placeholder || 'Show the key steps in your thinking.'}
         submitLabel={feedback ? 'Check revised answer' : 'Check my answer'}
+        hintLabel={feedback ? 'Give me a targeted hint' : "I'm stuck - give me a hint"}
+        solutionLabel="Show worked solution"
       />
-
-      <button className={`btn btn-secondary btn-hint ${recommendedAction === 'hint' ? 'is-recommended' : ''}`} onClick={handleHint} disabled={hintLoading || isCompleted}>
-        {hintLoading ? <span className="spinner" /> : (feedback ? 'Give me a targeted hint' : "I'm stuck - give me a hint")}
-      </button>
 
       {feedback && <FeedbackBox feedback={feedback} />}
 
       <div className="reveal-section">
-        <button
-          className={`btn btn-ghost btn-reveal ${recommendedAction === 'solution' ? 'is-recommended' : ''}`}
-          onClick={handleReveal}
-          disabled={revealLoading || isCompleted || !session.attempt_count && !feedback}
-        >
-          {revealLoading ? <span className="spinner" /> : 'Show worked solution'}
-        </button>
-
         {revealedAnswer && (
           <div className="card reveal-card">
             <div className="card-label">Worked solution</div>
@@ -173,8 +170,8 @@ export default function SessionView({ initialSession, onReset, onError }) {
         )}
       </div>
 
-      <button className="btn btn-ghost btn-back" onClick={onReset}>
-        Back to Input
+      <button type="button" className="btn-back" onClick={onReset}>
+        back to input
       </button>
     </div>
   )

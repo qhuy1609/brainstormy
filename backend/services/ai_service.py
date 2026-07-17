@@ -815,7 +815,7 @@ def infer_academic_response_type(question: str) -> dict[str, str]:
     if any(term in lowered for term in ("derive", "derivation", "prove", "show that")):
         return {"kind": "derivation", "label": "Your derivation", "placeholder": "Start from the relevant principle and show each step that connects it to the result.", "guidance": "Show the reasoning that supports your result."}
     if any(term in lowered for term in ("calculate", "find", "solve", "numerical", "equation")):
-        return {"kind": "calculation", "label": "Your calculation", "placeholder": "Write the formula you chose, substitute the values, and show the calculation.", "guidance": "Include your formula and key calculation steps."}
+        return {"kind": "calculation", "label": "Your working", "placeholder": "Write the formula you chose, substitute the values, and show your working.", "guidance": "Include your formula and key calculation steps."}
     if any(term in lowered for term in ("explain", "describe", "compare", "discuss", "why")):
         return {"kind": "explanation", "label": "Your explanation", "placeholder": "State your answer and explain the key idea or evidence that supports it.", "guidance": "Support your answer with clear reasoning."}
     if any(term in lowered for term in ("code", "bug", "debug", "function", "program")):
