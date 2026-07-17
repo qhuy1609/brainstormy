@@ -159,8 +159,8 @@ test('landing and workspace share the lowercase wordmark and darker metadata', a
 
   assert.match(landing, /aria-label="brainstormy home">brainstormy<span>\.<\/span>/)
   assert.match(workspace, /aria-label="brainstormy home">brainstormy<span>\.<\/span>/)
-  assert.match(workspace, /brainstormy - app/)
-  assert.match(html, /brainstormy - Think better with AI/)
+  assert.match(workspace, /document\.title = 'brainstormy\.'/)
+  assert.match(html, /<title>brainstormy\.<\/title>/)
   assert.match(html, /name="description"/)
   assert.match(html, /name="theme-color" content="#211E26"/)
   assert.match(html, /rel="icon" type="image\/svg\+xml" sizes="any" href="\/brainstormy-spark\.svg"/)

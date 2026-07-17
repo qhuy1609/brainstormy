@@ -99,7 +99,7 @@ export default function WorkspacePage() {
 
       <motion.main className="app-main" variants={composerEntrance}>
         {view === 'input' ? (
-          <QuestionInput onSubmit={handleStart} loading={loading} />
+          <QuestionInput onSubmit={handleStart} onError={setError} loading={loading} />
         ) : (
           <SessionView
             initialSession={session}

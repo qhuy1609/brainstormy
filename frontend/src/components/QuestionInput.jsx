@@ -14,6 +14,30 @@ const displayModes = [
   },
 ]
 
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024
+const SUPPORTED_IMAGE_TYPES = {
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/webp': 'webp',
+}
+
+function validateImageFile(file) {
+  if (!file || !SUPPORTED_IMAGE_TYPES[file.type?.toLowerCase()]) {
+    return 'Please use a jpg, jpeg, png, or webp image.'
+  }
+  if (file.size === 0) return 'The image is empty.'
+  if (file.size > MAX_IMAGE_BYTES) return 'The image is too large. Please use an image under 8 MB.'
+  return ''
+}
+
+function normalizePastedImage(file) {
+  const type = file.type.toLowerCase()
+  const extension = SUPPORTED_IMAGE_TYPES[type]
+  const validExtension = /\.(?:jpe?g|png|webp)$/i.test(file.name || '')
+  if (validExtension) return file
+  return new File([file], `pasted-image.${extension}`, { type, lastModified: file.lastModified })
+}
+
 function Icon({ name }) {
   const paths = {
     upload: (
@@ -61,7 +85,7 @@ function Icon({ name }) {
   )
 }
 
-export default function QuestionInput({ onSubmit, loading }) {
+export default function QuestionInput({ onSubmit, onError, loading }) {
   const [text, setText] = useState('')
   const [imageFile, setImageFile] = useState(null)
   const [examMode, setExamMode] = useState(false)
@@ -125,9 +149,40 @@ export default function QuestionInput({ onSubmit, loading }) {
 
   const handleImageChange = (e) => {
     const file = e.target.files[0]
-    if (file) {
-      setImageFile(file)
+    if (!file) return
+    const validationError = validateImageFile(file)
+    if (validationError) {
+      onError?.(validationError)
+      e.target.value = ''
+      return
     }
+    onError?.('')
+    setImageFile(file)
+  }
+
+  const handlePaste = (e) => {
+    const clipboardItems = Array.from(e.clipboardData?.items || [])
+    const clipboardFiles = clipboardItems.length > 0
+      ? clipboardItems.filter((item) => item.kind === 'file').map((item) => item.getAsFile()).filter(Boolean)
+      : Array.from(e.clipboardData?.files || [])
+
+    if (clipboardFiles.length === 0) return
+    e.preventDefault()
+
+    if (clipboardFiles.length > 1) {
+      onError?.('Please paste one image at a time.')
+      return
+    }
+
+    const file = clipboardFiles[0]
+    const validationError = validateImageFile(file)
+    if (validationError) {
+      onError?.(validationError)
+      return
+    }
+
+    onError?.('')
+    setImageFile(normalizePastedImage(file))
   }
 
   const clearImage = () => {
@@ -280,6 +335,7 @@ export default function QuestionInput({ onSubmit, loading }) {
           onCompositionStart={() => setIsComposing(true)}
           onCompositionEnd={() => setIsComposing(false)}
           onKeyDown={handleTextareaKeyDown}
+          onPaste={handlePaste}
           disabled={loading}
           rows={2}
         />
