@@ -40,7 +40,7 @@ export default function WorkspacePage() {
   const shouldReduceMotion = useReducedMotion()
 
   useEffect(() => {
-    document.title = 'brainstormy'
+    document.title = 'brainstormy.'
   }, [])
 
   const handleStart = async (text, imageFile, examMode, mode) => {

@@ -76,7 +76,7 @@ export default function LandingPage() {
   const introInitial = shouldReduceMotion ? false : 'hidden'
 
   useEffect(() => {
-    document.title = 'brainstormy'
+    document.title = 'brainstormy.'
   }, [])
 
   return (
