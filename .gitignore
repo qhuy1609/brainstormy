@@ -1,6 +1,7 @@
 # Secrets
 .env
-backend/.env
+.env.*
+!.env.user
 AGENTS.md
 .agents/
 

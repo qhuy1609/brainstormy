@@ -1,60 +1,84 @@
 # brainstormy
 
-**An AI tutor that protects your thinking, not replaces it.**
+**Think better with AI—not less.**
 
-brainstormy accepts a typed homework question, an uploaded image, or both. It validates that the request is study-related, asks users to submit multi-part work one question at a time, gives adaptive hints, diagnoses attempts, and can reveal a worked solution after an attempt.
+brainstormy is a learning and ideation workspace designed to keep people actively involved in their thinking. Instead of immediately producing a finished result, it helps users test an answer, ask for a useful nudge, or develop an early idea into a practical direction.
 
-## What changed in this build
+The project combines a Flask API with a Vite and React frontend. AI requests are sent through OpenRouter using one configurable, vision-capable model.
 
-- All AI calls now go through OpenRouter.
-- Every AI call uses one vision-capable `AI_TEXT_MODEL`.
-- Academic image uploads are extracted and validated in one multimodal call.
-- Idea-mode image uploads use the same model to extract creative context before discovery.
-- API secrets are kept in `backend/.env`, which should not be committed to Git.
+## Modes
+
+### Academic mode
+
+- Type a study question, upload an image, or provide both.
+- See the broad concepts connected to the question.
+- Request a conceptual hint before attempting an answer.
+- Submit working and a final answer for two focused checks: whether the working is going the right way and whether the answer is correct.
+- Ask for a targeted hint or reveal a complete worked solution after making an attempt.
+
+### Idea mode
+
+- Start with a rough project, writing, design, naming, campaign, or presentation idea.
+- Answer a small set of adaptive discovery questions or generate ideas immediately.
+- Compare a personalized shortlist of distinct directions.
+- Select up to two ideas and turn them into a practical development brief with focus areas and next steps.
 
 ## Requirements
 
-- Python 3.10+
-- Node.js 18+
-- An OpenRouter API key
+- Python 3.10 or newer
+- Node.js 18 or newer
+- An [OpenRouter](https://openrouter.ai/) API key
+- An OpenRouter model that supports text, image input, and structured JSON responses
 
-## 1. Backend setup
+## Quick start
 
-Open a terminal in the project folder:
+Clone the repository, then configure and run the backend and frontend in separate terminals.
+
+### Windows PowerShell
+
+Backend:
+
+```powershell
+cd backend
+python -m venv venv
+venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+Copy-Item .env.user .env
+```
+
+Open `backend/.env`, replace the placeholder API key with your own, then start Flask:
+
+```powershell
+python app.py
+```
+
+Frontend, from the repository root in a second terminal:
+
+```powershell
+cd frontend
+npm install
+npm run dev
+```
+
+### macOS or Linux
+
+Backend:
 
 ```bash
 cd backend
-python -m venv venv
-source venv/bin/activate      # On Windows: venv\Scripts\activate
+python3 -m venv venv
+source venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env          # On Windows: copy .env.example .env
+cp .env.user .env
 ```
 
-Open `backend/.env` and configure OpenRouter:
-
-```env
-# OpenRouter API key
-OPENROUTER_API_KEY=
-
-# Must support text, image input, and structured JSON
-AI_TEXT_MODEL=google/gemini-3.1-flash-lite
-```
-
-Start the backend:
+Open `backend/.env`, replace the placeholder API key with your own, then start Flask:
 
 ```bash
 python app.py
 ```
 
-Backend runs on:
-
-```text
-http://localhost:5000
-```
-
-## 2. Frontend setup
-
-Open a second terminal:
+Frontend, from the repository root in a second terminal:
 
 ```bash
 cd frontend
@@ -62,129 +86,114 @@ npm install
 npm run dev
 ```
 
-Frontend runs on:
+Once both servers are running:
 
-```text
-http://localhost:5173
+- Marketing page: `http://localhost:5173/`
+- Academic and Idea workspace: `http://localhost:5173/app`
+- Backend health check: `http://localhost:5000/api/health`
+
+## Environment variables
+
+Copy [`backend/.env.user`](backend/.env.user) to `backend/.env`. The completed `.env` file is ignored by Git and must never be committed.
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `OPENROUTER_API_KEY` | Yes | Authenticates requests to OpenRouter. Use your own key. |
+| `AI_TEXT_MODEL` | Yes | Selects the vision-capable model used for validation, image understanding, tutoring, and idea generation. |
+
+The included template uses:
+
+```env
+OPENROUTER_API_KEY=your_openrouter_api_key_here
+AI_TEXT_MODEL=google/gemini-3.1-flash-lite
 ```
 
-The frontend exposes two browser routes:
+You can replace `AI_TEXT_MODEL` with another compatible OpenRouter model.
 
-- `/` is the brainstormy marketing landing page.
-- `/app` is the interactive Academic and Idea mode workspace.
+## Development commands
 
-Production hosting must use an SPA fallback that serves `frontend/dist/index.html` for direct requests to `/app` and other client-side routes. Refreshing `/app` intentionally starts a fresh composer because sessions are currently held in memory.
+Run backend commands from `backend/`:
 
-Open that URL in your browser and try a question such as:
+| Command | Purpose |
+| --- | --- |
+| `python app.py` | Start the Flask API on port 5000. |
+| `python -m unittest discover -s tests -p "test_*.py"` | Run the backend test suite. |
 
-```text
-Derive the equation E_p = mgh for the potential energy change of a mass m moved through a vertical distance h near Earth's surface.
-```
+Run frontend commands from `frontend/`:
 
-## API configuration
+| Command | Purpose |
+| --- | --- |
+| `npm run dev` | Start the Vite development server on port 5173. |
+| `npm test` | Run the frontend tests with Node's test runner. |
+| `npm run build` | Create a production bundle in `frontend/dist/`. |
+| `npm run preview` | Preview the production bundle locally. |
 
-The backend reads these environment variables from `backend/.env`:
+Tests mock OpenRouter calls and do not require an API key or network access.
 
-| Variable | Required | Example | Purpose |
-| --- | --- | --- | --- |
-| `OPENROUTER_API_KEY` | Yes | `sk-or-...` | OpenRouter API key. |
-| `AI_TEXT_MODEL` | Yes | `google/gemini-3.1-flash-lite` | Vision-capable model used for text, images, structured validation, and tutoring. |
+## Supported input
 
-## AI routing
+- Typed text
+- JPEG, PNG, or WebP images smaller than 8 MB
+- An image together with additional typed context
 
-Text-only flow:
+The selected `AI_TEXT_MODEL` must support image input for uploaded questions or creative references.
 
-```text
-User text question -> OpenRouter + AI_TEXT_MODEL validation -> tutor session
-```
-
-Image flow:
-
-```text
-Academic image -> OpenRouter + AI_TEXT_MODEL for extraction and validation in one call
-Idea image     -> OpenRouter + AI_TEXT_MODEL for creative-context extraction
-               -> normal Idea discovery flow
-```
-
-The configured model must accept image input. Academic images and any accompanying typed context are sent together.
-
-## Text, Markdown, and math rendering
-
-The frontend uses:
-
-- `react-markdown`
-- `remark-math`
-- `rehype-katex`
-- `katex`
-
-This is why AI responses containing Markdown or LaTeX, such as `$E_p = mgh$` and `$$E_p = mgh$$`, render properly in the browser. The math normalizer also accepts legacy `\(...\)` and `\[...\]` delimiters.
-
-## Project structure
+## Architecture
 
 ```text
 brainstormy/
-  backend/
-    ai/
-      openrouter.py
-      text_model.py
-      image_input.py
-    app.py
-    requirements.txt
-    .env.example
-    routes/
-    services/
-    storage/
-  frontend/
-    package.json
-    index.html
-    src/
-      App.jsx
-      main.jsx
-      api/
-      components/
-        MathText.jsx
+├── backend/
+│   ├── ai/          # OpenRouter client and model adapters
+│   ├── routes/      # Flask HTTP endpoints
+│   ├── services/    # Academic and Idea workflows
+│   ├── storage/     # In-memory session store
+│   ├── tests/       # Backend unit tests
+│   └── app.py       # API entry point and health check
+└── frontend/
+    ├── src/
+    │   ├── api/     # API request helpers
+    │   └── components/
+    ├── index.html
+    └── vite.config.js
 ```
 
-## Sanity checks
+The frontend renders Markdown and LaTeX responses with React Markdown and KaTeX. The backend validates structured AI output before returning it to the client.
 
-- Text-only question: submit text without an image and confirm the backend logs the text route and selected text model.
-- Academic image: upload a jpg, png, or webp and confirm one multimodal validation call is logged.
-- Text plus image: upload an image with typed context and confirm both are included in the accepted question.
-- Missing env vars: temporarily remove one required variable from `backend/.env`, restart the backend, and confirm the frontend receives a readable config error.
-- Rate limit: if OpenRouter returns 429, the frontend should show a model-specific rate-limit message.
+## Current limitations and production readiness
 
-## Common issues
+The repository is configured for local development. Before deploying it publicly:
 
-### Backend says `OPENROUTER_API_KEY` is missing
+- Replace the frontend's hardcoded `http://localhost:5000/api/session` API base with an environment-based production URL.
+- Run Flask behind a production WSGI server instead of the built-in debug server.
+- Replace the in-memory session store if sessions must survive restarts or work across multiple backend instances.
+- Configure the frontend host with an SPA fallback so direct requests to `/app` serve `frontend/dist/index.html`.
+- Restrict CORS to the deployed frontend origin.
 
-Check that the file is named exactly:
+Refreshing the app starts a fresh composer, and restarting the backend clears all current sessions.
 
-```text
-backend/.env
+## Troubleshooting
+
+### The backend reports a missing API key or model
+
+Confirm that `backend/.env` exists and contains both required values, then restart the backend. Do not rename `.env.user`; it is only the shareable template.
+
+### PowerShell blocks virtual-environment activation
+
+You can run the virtual environment's Python directly without activating it:
+
+```powershell
+venv\Scripts\python.exe -m pip install -r requirements.txt
+venv\Scripts\python.exe app.py
 ```
 
-and contains:
+### An image upload fails
 
-```env
-OPENROUTER_API_KEY=your_openrouter_key_here
-```
+Check the file format and size, then confirm that the selected OpenRouter model accepts image input.
 
-Restart the backend after editing `.env`.
+### OpenRouter returns a rate-limit or availability error
 
-### Image upload fails
+Wait and retry, or configure a different compatible `AI_TEXT_MODEL` in `backend/.env`, then restart the backend.
 
-Use `jpg`, `jpeg`, `png`, or `webp` images under 8 MB. Also check that `AI_TEXT_MODEL` is a vision-capable OpenRouter model.
+### Frontend changes do not appear
 
-### Text generation is rate-limited
-
-Try a different `AI_TEXT_MODEL` in `backend/.env`, then restart the backend.
-
-### Changes do not show in browser
-
-Stop the frontend dev server and restart it:
-
-```bash
-npm run dev
-```
-
-Then hard-refresh the browser. On Windows/Chrome, press `Ctrl + F5`.
+Restart `npm run dev` and hard-refresh the browser. On Windows with Chrome or Edge, use `Ctrl+F5`.
