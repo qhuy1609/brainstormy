@@ -5,7 +5,7 @@ import QuestionInput from './QuestionInput.jsx'
 import SessionView from './SessionView.jsx'
 import { buildStartSessionFormData } from '../api/startSessionRequest.js'
 
-const API_BASE = 'https://brainstormy-backend.onrender.com/api/session'
+const API_BASE = 'https://brainstormy-backend.vercel.app/api/session'
 
 const workspaceEntrance = {
   hidden: {},
