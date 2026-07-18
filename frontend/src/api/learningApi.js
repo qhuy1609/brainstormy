@@ -1,4 +1,4 @@
-const API_BASE = 'https://brainstormy-backend.onrender.com/api/session'
+const API_BASE = 'https://brainstormy-backend.vercel.app/api/session'
 
 export async function fetchSessionState(sessionId) {
   const res = await fetch(`${API_BASE}/${sessionId}`)
