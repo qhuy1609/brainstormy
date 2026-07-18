@@ -19,7 +19,7 @@ if not OPENROUTER_API_KEY:
     print("WARNING: OPENROUTER_API_KEY is not set. Add it to backend/.env before starting a learning session.")
 
 
-@app.route("/api/health", methods=["GET"])
+@app.route("/", methods=["GET"])
 def health():
     return {
         "status": "ok",
@@ -29,4 +29,5 @@ def health():
 
 
 if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
