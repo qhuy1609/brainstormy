@@ -92,24 +92,6 @@ Once both servers are running:
 - Academic and Idea workspace: `http://localhost:5173/app`
 - Backend health check: `http://localhost:5000/api/health`
 
-## Environment variables
-
-Copy [`backend/.env.user`](backend/.env.user) to `backend/.env`. The completed `.env` file is ignored by Git and must never be committed.
-
-| Variable | Required | Purpose |
-| --- | --- | --- |
-| `OPENROUTER_API_KEY` | Yes | Authenticates requests to OpenRouter. Use your own key. |
-| `AI_TEXT_MODEL` | Yes | Selects the vision-capable model used for validation, image understanding, tutoring, and idea generation. |
-
-The included template uses:
-
-```env
-OPENROUTER_API_KEY=your_openrouter_api_key_here
-AI_TEXT_MODEL=google/gemini-3.1-flash-lite
-```
-
-You can replace `AI_TEXT_MODEL` with another compatible OpenRouter model.
-
 ## Development commands
 
 Run backend commands from `backend/`:
@@ -158,42 +140,3 @@ brainstormy/
 ```
 
 The frontend renders Markdown and LaTeX responses with React Markdown and KaTeX. The backend validates structured AI output before returning it to the client.
-
-## Current limitations and production readiness
-
-The repository is configured for local development. Before deploying it publicly:
-
-- Replace the frontend's hardcoded `http://localhost:5000/api/session` API base with an environment-based production URL.
-- Run Flask behind a production WSGI server instead of the built-in debug server.
-- Replace the in-memory session store if sessions must survive restarts or work across multiple backend instances.
-- Configure the frontend host with an SPA fallback so direct requests to `/app` serve `frontend/dist/index.html`.
-- Restrict CORS to the deployed frontend origin.
-
-Refreshing the app starts a fresh composer, and restarting the backend clears all current sessions.
-
-## Troubleshooting
-
-### The backend reports a missing API key or model
-
-Confirm that `backend/.env` exists and contains both required values, then restart the backend. Do not rename `.env.user`; it is only the shareable template.
-
-### PowerShell blocks virtual-environment activation
-
-You can run the virtual environment's Python directly without activating it:
-
-```powershell
-venv\Scripts\python.exe -m pip install -r requirements.txt
-venv\Scripts\python.exe app.py
-```
-
-### An image upload fails
-
-Check the file format and size, then confirm that the selected OpenRouter model accepts image input.
-
-### OpenRouter returns a rate-limit or availability error
-
-Wait and retry, or configure a different compatible `AI_TEXT_MODEL` in `backend/.env`, then restart the backend.
-
-### Frontend changes do not appear
-
-Restart `npm run dev` and hard-refresh the browser. On Windows with Chrome or Edge, use `Ctrl+F5`.
