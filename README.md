@@ -1,6 +1,6 @@
 # brainstormy
 
-**Think better with AI—not less.**
+**Think better with AI-not less.**
 
 brainstormy is a learning and ideation workspace designed to keep people actively involved in their thinking. Instead of immediately producing a finished result, it helps users test an answer, ask for a useful nudge, or develop an early idea into a practical direction.
 
