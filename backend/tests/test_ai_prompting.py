@@ -225,14 +225,19 @@ class AIPromptingTests(unittest.TestCase):
         self.assertEqual(initial["type"], "initial")
         self.assertEqual(targeted["type"], "targeted")
 
-    def test_diagnosis_includes_previous_attempts_and_returns_conversation(self):
-        payload = {"status": "calculation_error", "next_action": "revise", "feedback": "Your setup is sound, but the sign changed in the last calculation. Recheck that line and try it again."}
+    def test_diagnosis_returns_only_working_and_answer_verdicts(self):
+        payload = {
+            "working_verdict": "right_way",
+            "answer_verdict": "incorrect",
+            "feedback": "This extra field must not be returned.",
+        }
         with patch("services.ai_service.call_text_model", return_value=json_text(payload)) as call:
             result = ai_service.diagnose_academic_attempt("Solve $x + 2 = 5$.", "x = -3", ["x = 7"], [])
-        self.assertEqual(result, payload)
+        self.assertEqual(result, {"working_verdict": "right_way", "answer_verdict": "incorrect"})
         prompt = call.call_args.args[0][1]["content"]
         self.assertIn("previous_attempts_json", prompt)
         self.assertIn("x = 7", prompt)
+        self.assertIn("Do not return feedback", prompt)
 
     def test_worked_solution_is_continuous(self):
         payload = {"full_working": "Subtract $2$ from both sides.\n\nThis gives $$x = 5 - 2 = 3.$$", "final_answer": "$x = 3$"}

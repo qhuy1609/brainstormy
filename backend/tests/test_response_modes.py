@@ -75,7 +75,7 @@ class ResponseModeTests(unittest.TestCase):
 
     def test_single_question_attempt_and_reveal_flow(self):
         validation = {"valid": True, "message": "OK", "cleaned_question": "Solve $x + 2 = 5$.", "is_multi_part": False}
-        diagnosis = {"status": "calculation_error", "next_action": "revise", "feedback": "Your setup is close; recheck the subtraction and try again."}
+        diagnosis = {"working_verdict": "right_way", "answer_verdict": "incorrect"}
         solution = {"full_working": "Subtract $2$ from both sides, giving $x = 3$.", "final_answer": "$x = 3$"}
         with patch("services.session_service.validate_academic_request", return_value=validation), \
              patch("services.session_service.infer_required_concepts", return_value=["Linear equations", "Algebra"]), \
@@ -84,10 +84,38 @@ class ResponseModeTests(unittest.TestCase):
             created = create_session("Solve x + 2 = 5.", "text", None, False, "academic")
             attempted = submit_attempt(created["session_id"], "x = -3")
             revealed = reveal_answer(created["session_id"])
-        self.assertEqual(attempted["feedback"], diagnosis["feedback"])
-        self.assertEqual(attempted["diagnosis"]["next_action"], "revise")
+        self.assertEqual(attempted["working_verdict"], "right_way")
+        self.assertEqual(attempted["answer_verdict"], "incorrect")
+        self.assertFalse(attempted["correct"])
+        self.assertNotIn("feedback", attempted)
         self.assertEqual(revealed["worked_solution"], solution)
         self.assertNotIn("current_sub_question_index", created)
+
+    def test_correct_answer_completes_regardless_of_working_verdict(self):
+        validation = {"valid": True, "message": "OK", "cleaned_question": "Solve $x + 2 = 5$.", "is_multi_part": False}
+        with patch("services.session_service.validate_academic_request", return_value=validation), \
+             patch("services.session_service.infer_required_concepts", return_value=["Linear equations", "Algebra"]), \
+             patch("services.session_service.diagnose_academic_attempt") as diagnose:
+            for working_verdict in ("right_way", "wrong_way"):
+                with self.subTest(working_verdict=working_verdict):
+                    diagnose.return_value = {"working_verdict": working_verdict, "answer_verdict": "correct"}
+                    created = create_session("Solve x + 2 = 5.", "text", None, False, "academic")
+                    attempted = submit_attempt(created["session_id"], "I guessed after adding 2. x = 3")
+                    self.assertTrue(attempted["correct"])
+                    self.assertTrue(attempted["session_completed"])
+                    self.assertEqual(attempted["status"], "completed")
+
+    def test_missing_answer_keeps_session_open(self):
+        validation = {"valid": True, "message": "OK", "cleaned_question": "Solve $x + 2 = 5$.", "is_multi_part": False}
+        diagnosis = {"working_verdict": "right_way", "answer_verdict": "not_provided"}
+        with patch("services.session_service.validate_academic_request", return_value=validation), \
+             patch("services.session_service.infer_required_concepts", return_value=["Linear equations", "Algebra"]), \
+             patch("services.session_service.diagnose_academic_attempt", return_value=diagnosis):
+            created = create_session("Solve x + 2 = 5.", "text", None, False, "academic")
+            attempted = submit_attempt(created["session_id"], "Subtract 2 from both sides.")
+        self.assertFalse(attempted["correct"])
+        self.assertFalse(attempted["session_completed"])
+        self.assertEqual(attempted["status"], "active")
 
     def test_health_requires_only_key_and_text_model(self):
         with patch("app.OPENROUTER_API_KEY", "key"), patch("app.AI_TEXT_MODEL", "vision-model"):

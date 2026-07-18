@@ -13,7 +13,7 @@ ACADEMIC_VALIDATION_PROMPT_VERSION = "academic-validation-v3"
 IDEA_VALIDATION_PROMPT_VERSION = "idea-validation-v2"
 ACADEMIC_HINT_PROMPT_VERSION = "academic-hints-v2"
 ACADEMIC_CONCEPTS_PROMPT_VERSION = "academic-concepts-v2"
-ACADEMIC_DIAGNOSIS_PROMPT_VERSION = "academic-diagnosis-v2"
+ACADEMIC_DIAGNOSIS_PROMPT_VERSION = "academic-diagnosis-v3"
 ACADEMIC_TARGETED_HINT_PROMPT_VERSION = "academic-targeted-hint-v1"
 ACADEMIC_WORKED_SOLUTION_PROMPT_VERSION = "academic-worked-solution-v3"
 IDEA_DISCOVERY_PROMPT_VERSION = "idea-discovery-v1"
@@ -27,8 +27,8 @@ MAX_INPUT_CHARS = 12000
 IDEA_TASK_TYPES = {"creative_writing", "product_project", "design", "campaign", "naming", "presentation", "general"}
 IDEA_QUESTION_TYPES = {"single_select", "multi_select", "short_text"}
 IDEA_DIFFICULTIES = {"low", "medium", "high"}
-ACADEMIC_DIAGNOSIS_STATUSES = {"correct", "mostly_correct", "misconception", "calculation_error", "incomplete"}
-ACADEMIC_NEXT_ACTIONS = {"hint", "solution", "revise"}
+ACADEMIC_WORKING_VERDICTS = {"right_way", "wrong_way", "not_provided"}
+ACADEMIC_ANSWER_VERDICTS = {"correct", "incorrect", "not_provided"}
 LANGUAGE_NAMES = {
     "en": "English",
     "zh": "Chinese",
@@ -842,35 +842,22 @@ def generate_initial_academic_hint(question: str, response_type: dict[str, str])
 
 
 def diagnose_academic_attempt(question: str, attempt: str, prior_attempts: list[str], hints: list[dict[str, str]]) -> dict[str, Any]:
-    prohibited = re.compile(r"\b(the student|the learner|ask the student|tell the student|guide the student|encourage the student|their response|the candidate)\b", re.IGNORECASE)
-    solution_leakage = re.compile(r"\b(full solution|final answer is|the answer is)\b", re.IGNORECASE)
-
     def validate(value):
         if not isinstance(value, dict):
             raise AIServiceError("Academic diagnosis must be an object.")
-        status = str(value.get("status") or "").strip().lower()
-        next_action = str(value.get("next_action") or "").strip().lower()
-        feedback = _clean_short_text(value.get("feedback"), maximum=900)
-        if status not in ACADEMIC_DIAGNOSIS_STATUSES:
-            raise AIServiceError("Academic diagnosis returned an unsupported status.")
-        if next_action not in ACADEMIC_NEXT_ACTIONS:
-            raise AIServiceError("Academic diagnosis returned an unsupported next action.")
-        if prohibited.search(feedback):
-            raise AIServiceError("Academic feedback must speak directly to the learner.")
-        if len(feedback.split()) > 120:
-            raise AIServiceError("Academic feedback is too long.")
-        if status != "correct" and solution_leakage.search(feedback):
-            raise AIServiceError("Academic feedback appears to reveal the solution.")
-        return {"status": status, "next_action": next_action, "feedback": feedback}
+        working_verdict = str(value.get("working_verdict") or "").strip().lower()
+        answer_verdict = str(value.get("answer_verdict") or "").strip().lower()
+        if working_verdict not in ACADEMIC_WORKING_VERDICTS:
+            raise AIServiceError("Academic diagnosis returned an unsupported working verdict.")
+        if answer_verdict not in ACADEMIC_ANSWER_VERDICTS:
+            raise AIServiceError("Academic diagnosis returned an unsupported answer verdict.")
+        return {"working_verdict": working_verdict, "answer_verdict": answer_verdict}
 
     messages = [
         {"role": "system", "content": _academic_system_prompt()},
-        {"role": "user", "content": f"Prompt version: {ACADEMIC_DIAGNOSIS_PROMPT_VERSION}\n{_user_content_boundary_instruction()}\n\nYou are looking at a learner's attempt in a live tutoring chat. Return JSON only with status, next_action, and feedback. status must be correct, mostly_correct, misconception, calculation_error, or incomplete. next_action must be hint, solution, or revise. Write feedback as one natural, direct paragraph under 120 words. Talk through what is working and what to fix without labels, bullet points, third-person phrases such as 'the student', or teacher instructions. You may naturally acknowledge a repeated mistake from an earlier attempt. Do not reveal the full solution or final answer, even when next_action is solution. Use $...$ for inline math and $$...$$ for display math.\n\n{_wrap_user_content('academic_question', question)}\n\n{_wrap_user_content('previous_attempts_json', _academic_schema_text(prior_attempts))}\n\n{_wrap_user_content('latest_attempt', attempt)}\n\n{_wrap_user_content('previous_hints_json', _academic_schema_text(hints))}"},
+        {"role": "user", "content": f"Prompt version: {ACADEMIC_DIAGNOSIS_PROMPT_VERSION}\n{_user_content_boundary_instruction()}\n\nCheck the learner's latest attempt and return JSON only with working_verdict and answer_verdict. working_verdict must be right_way when the shown reasoning is moving toward a valid solution, wrong_way when the shown reasoning is invalid, or not_provided when no working or reasoning is shown. answer_verdict must be correct when the submitted final answer is correct, incorrect when a submitted final answer is wrong, or not_provided when no final answer is given. Judge the two fields independently. Do not return feedback, explanations, corrections, error classifications, recommended actions, or any other fields.\n\n{_wrap_user_content('academic_question', question)}\n\n{_wrap_user_content('previous_attempts_json', _academic_schema_text(prior_attempts))}\n\n{_wrap_user_content('latest_attempt', attempt)}\n\n{_wrap_user_content('previous_hints_json', _academic_schema_text(hints))}"},
     ]
-    try:
-        return _call_json_with_repair(messages, validator=validate, temperature=0.15, prompt_version=ACADEMIC_DIAGNOSIS_PROMPT_VERSION)
-    except AIServiceError:
-        return {"status": "incomplete", "next_action": "hint", "feedback": "Let's take another look at this together — can you walk me through your thinking so far?"}
+    return _call_json_with_repair(messages, validator=validate, temperature=0.15, prompt_version=ACADEMIC_DIAGNOSIS_PROMPT_VERSION)
 
 
 def generate_targeted_academic_hint(question: str, attempt: str, diagnosis: dict[str, Any], prior_hints: list[dict[str, str]]) -> dict[str, str]:

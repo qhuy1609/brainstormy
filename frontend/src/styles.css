@@ -1141,6 +1141,20 @@ a {
   background: rgba(74, 158, 255, 0.05);
 }
 
+.feedback-verdict {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-top: 0.65rem;
+  color: #cbd5e1;
+}
+
+.feedback-verdict strong {
+  color: #bfdbfe;
+  font-size: 0.9rem;
+}
+
 .feedback-section + .feedback-section {
   margin-top: 0.8rem;
 }

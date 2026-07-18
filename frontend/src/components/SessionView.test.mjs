@@ -27,18 +27,19 @@ test('Academic sessions use the single-question conversational contracts', async
   assert.doesNotMatch(source, /current_sub_question|total_sub_questions|ProgressBar/)
   assert.match(source, /revealedAnswer\.full_working/)
   assert.doesNotMatch(source, /revealedAnswer\.steps/)
-  assert.match(feedback, /diagnosis\.feedback/)
-  assert.doesNotMatch(feedback, /diagnosis\.strength|diagnosis\.focus/)
+  assert.match(feedback, /diagnosis\.working_verdict/)
+  assert.match(feedback, /diagnosis\.answer_verdict/)
+  assert.match(feedback, /not_provided: 'Not provided'/)
+  assert.doesNotMatch(feedback, /diagnosis\.feedback|diagnosis\.next_action|Explanation:/)
 })
 
-test('Academic recommendations emphasize actions without removing controls', async () => {
+test('Academic feedback does not recommend actions or remove controls', async () => {
   const source = await readFile(new URL('./SessionView.jsx', import.meta.url), 'utf8')
 
-  assert.match(source, /recommendedAction === 'revise'/)
-  assert.match(source, /recommendedAction === 'hint'/)
-  assert.match(source, /recommendedAction === 'solution'/)
+  assert.doesNotMatch(source, /recommendedAction|recommended=|hintRecommended=|solutionRecommended=/)
   assert.match(source, /Give me a targeted hint/)
   assert.match(source, /Show worked solution/)
+  assert.match(source, /feedback && <FeedbackBox feedback=\{feedback\}/)
 })
 
 test('Final-answer uppercase styling applies only to its label', async () => {

@@ -23,8 +23,6 @@ export default function SessionView({ initialSession, onReset, onError }) {
   const [maxHintsReached, setMaxHintsReached] = useState(false)
 
   const isCompleted = session.status === 'completed'
-  const recommendedAction = feedback?.diagnosis?.next_action
-
   // Refresh session state from backend
   const refresh = async () => {
     try {
@@ -98,12 +96,7 @@ export default function SessionView({ initialSession, onReset, onError }) {
           <div className="complete-icon">&#10003;</div>
           <h2>Session Complete</h2>
           <p>You worked through the question. Great job thinking it through!</p>
-          {feedback && feedback.explanation && (
-            <div className="explanation-box">
-              <strong>Explanation:</strong>
-              <MathText>{feedback.explanation}</MathText>
-            </div>
-          )}
+          {feedback && <FeedbackBox feedback={feedback} />}
           <button className="btn btn-primary btn-new-session" onClick={onReset}>
   Start New Session
 </button>
@@ -137,9 +130,6 @@ export default function SessionView({ initialSession, onReset, onError }) {
         revealLoading={revealLoading}
         disabled={isCompleted}
         revealDisabled={!session.attempt_count && !feedback}
-        recommended={recommendedAction === 'revise'}
-        hintRecommended={recommendedAction === 'hint'}
-        solutionRecommended={recommendedAction === 'solution'}
         label={session.response_type?.kind === 'calculation' ? 'Your working' : (session.response_type?.label || 'Your reasoning')}
         placeholder={session.response_type?.placeholder || 'Show the key steps in your thinking.'}
         submitLabel={feedback ? 'Check revised answer' : 'Check my answer'}

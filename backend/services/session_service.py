@@ -408,13 +408,14 @@ def submit_attempt(session_id, answer):
         session["question"], answer, [item["text"] for item in flow["attempts"]], flow["hints"]
     )
     flow["attempts"].append({"text": answer, "diagnosis": diagnosis})
-    is_correct = diagnosis["status"] == "correct"
+    is_correct = diagnosis["answer_verdict"] == "correct"
     flow["stage"] = "completed" if is_correct else "revising"
     if is_correct:
         session["status"] = "completed"
     return {
         "correct": is_correct,
-        "feedback": diagnosis["feedback"],
+        "working_verdict": diagnosis["working_verdict"],
+        "answer_verdict": diagnosis["answer_verdict"],
         "diagnosis": diagnosis,
         "stage": flow["stage"],
         "attempt_count": len(flow["attempts"]),
